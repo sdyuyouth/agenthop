@@ -21,28 +21,25 @@ chmod +x agenthop-macos-arm64   # Linux 同样；Windows 用 agenthop-windows-x6
 | `agenthop-linux-arm64` | Linux ARM |
 | `agenthop-windows-x64.exe` | Windows 64 位 |
 
-有资料、准备回答的一方先挂上房间，把短码发给对方：
+一边挂上房间，另一边跟上同一个短码。两边用同一种 `send` 说话。队列同一时刻只做队头那一件，后面的话排在它后面。
 
 ```bash
-agenthop host
-# code 4821-amber-river-maple
+agenthop host --json
+agenthop join 4821-amber-river-maple --json
 ```
 
-对方的 agent 发来问题。`host` 把收到和发出的消息打在自己的标准输出上。`--json` 时每行一个 JSON：`received` 是收到的问题，`sent` 是交出去的结果。本机 agent 看这行输出，用自己的工具做完，再把结果交回去。问题和结果是同一种消息，都可以带文件：
+`--json` 时每行一个事件。`current` 是正在做的那条，`pending` 是还没轮到的编号。`said` 是一句不需要结果的话，已经轮到。`done` 是这条要结果的消息已经有了结果。`supplement` 是并进当前这件的补充。`queued` 是已经入队、还没轮到。
+
+不需要结果的话马上返回。要结果就加 `--ask`，命令等到这个编号的结果。把结果交回给正在做的那条用 `--answer`。给正在做的事情补一句用 `--supplement`。挂着房间的一方省略短码：
 
 ```bash
-agenthop reply <id> "接口继续用 JSON-RPC" --file ./decision.md
+agenthop send 4821-amber-river-maple "先看接口" 
+agenthop send 4821-amber-river-maple "接口怎么定" --ask --file ./draft.md
+agenthop send --answer <id> "接口继续用 JSON-RPC" --file ./decision.md
+agenthop send "把测试也算上" --supplement
 ```
 
-`agenthop inbox` 仍返回还没回答的问题。
-
-来问的一方：
-
-```bash
-agenthop send 4821-amber-river-maple "接口怎么定" --file ./draft.md
-```
-
-文字打在标准输出。对方结果里的附件写到 `agenthop-out/`，路径打在标准错误。`--json` 把文字和路径合成一个 JSON。
+`--ask` 的结果文字打在标准输出，附件写到 `agenthop-out/`，路径打在标准错误。`--json` 把这一次发送的结果合成一个 JSON。`agenthop queue` 看当前这一条和后面排着的编号。
 
 ## Relay
 

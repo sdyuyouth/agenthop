@@ -3,29 +3,119 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Role, TaskState, type Task } from "@a2a-js/sdk";
 import { ClientFactory } from "@a2a-js/sdk/client";
-import { filesFromPaths, messageFromParts, partsFromMessage, safeName, type HopFile, type HopMessage } from "@agenthop/agent";
+import { filesFromPaths, messageFromParts, partsFromMessage, safeName, type HopFile } from "@agenthop/agent";
 import { normalizeCode, relayEndpoints } from "@agenthop/tunnel";
-import { DEFAULT_RELAY } from "./host.js";
+import { DEFAULT_RELAY, readHostFile } from "./host.js";
+import { type Ack } from "./room.js";
+import { type SessionEvent } from "./talk.js";
+
+export type SendKind = "say" | "ask" | "supplement" | "result";
 
 export type SendOptions = {
-  code: string;
+  code?: string;
   text: string;
   files?: string[];
   relay?: string;
   pass?: string;
   outDir?: string;
   waitMs?: number;
+  kind?: SendKind;
+  answerId?: string;
 };
 
 export type SendResult = {
+  id: string;
+  kind: string;
+  event: string;
+  from?: string;
   text: string;
   files: { name: string; mediaType: string; path: string }[];
+  current: string | null;
+  pending: string[];
 };
 
 export async function sendMessage(options: SendOptions): Promise<SendResult> {
+  const kind = options.kind ?? "say";
+  if (!options.code) return sendLocal(options, kind);
+  return sendRemote(options, kind);
+}
+
+export async function followRoom(options: {
+  code: string;
+  relay?: string;
+  pass?: string;
+  onEvent: (event: SessionEvent) => void;
+}): Promise<void> {
   const relay = options.relay ?? process.env.AGENTHOP_RELAY ?? DEFAULT_RELAY;
   const { publicBase } = relayEndpoints(relay, normalizeCode(options.code));
-  const message: HopMessage = { text: options.text, files: await filesFromPaths(options.files ?? []) };
+  let after = 0;
+  for (;;) {
+    const body = await readQueue(publicBase, after, options.pass);
+    for (const event of body.events) {
+      options.onEvent(event);
+      after = event.seq;
+    }
+    await delay(300);
+  }
+}
+
+export async function readQueue(publicBase: string, after = 0, pass?: string): Promise<{
+  current: string | null;
+  pending: string[];
+  events: SessionEvent[];
+}> {
+  const response = await fetch(`${publicBase}agenthop/queue?after=${after}`, {
+    headers: pass ? { authorization: `Bearer ${pass}` } : {},
+  });
+  if (!response.ok) throw new Error(await response.text());
+  return (await response.json()) as { current: string | null; pending: string[]; events: SessionEvent[] };
+}
+
+async function sendLocal(options: SendOptions, kind: SendKind): Promise<SendResult> {
+  const host = await readHostFile();
+  const id = randomUUID();
+  const response = await fetch(`${host.controlUrl}/message`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ id, text: options.text, files: options.files ?? [], kind, answerId: options.answerId }),
+  });
+  if (!response.ok) throw new Error(await response.text());
+  const ack = (await response.json()) as Ack;
+  if (!ack.wait) return { ...ack, files: [] };
+  return waitLocal(host.controlUrl, ack.id, options.waitMs ?? 9 * 60 * 1000);
+}
+
+async function waitLocal(controlUrl: string, id: string, waitMs: number): Promise<SendResult> {
+  const deadline = Date.now() + waitMs;
+  while (Date.now() < deadline) {
+    const response = await fetch(`${controlUrl}/message/${id}`);
+    if (!response.ok) throw new Error(await response.text());
+    const body = (await response.json()) as {
+      state: string;
+      result: { text: string; files: SendResult["files"] } | null;
+      current: string | null;
+      pending: string[];
+    };
+    if (body.state === "done" && body.result) {
+      return {
+        id,
+        kind: "result",
+        event: "done",
+        text: body.result.text,
+        files: body.result.files,
+        current: body.current,
+        pending: body.pending,
+      };
+    }
+    await delay(300);
+  }
+  throw new Error(`no result for ${id}`);
+}
+
+async function sendRemote(options: SendOptions, kind: SendKind): Promise<SendResult> {
+  const relay = options.relay ?? process.env.AGENTHOP_RELAY ?? DEFAULT_RELAY;
+  const code = normalizeCode(options.code ?? "");
+  const { publicBase } = relayEndpoints(relay, code);
   const previous = globalThis.fetch;
   if (options.pass) {
     const pass = options.pass;
@@ -37,26 +127,28 @@ export async function sendMessage(options: SendOptions): Promise<SendResult> {
   }
   try {
     const client = await new ClientFactory().createFromUrl(publicBase);
-    const request = {
-      tenant: "",
-      configuration: {
-        returnImmediately: true,
-        acceptedOutputModes: ["text/plain", "application/octet-stream"],
-        taskPushNotificationConfig: undefined,
-      },
-      metadata: undefined,
-      message: {
-        messageId: randomUUID(),
-        contextId: "",
-        taskId: "",
-        role: Role.ROLE_USER,
-        parts: partsFromMessage(message),
-        extensions: [],
-        metadata: {},
-        referenceTaskIds: [],
-      },
-    };
-    const created = asTask(await client.sendMessage(request));
+    const created = asTask(
+      await client.sendMessage({
+        tenant: "",
+        configuration: {
+          returnImmediately: true,
+          acceptedOutputModes: ["text/plain", "application/octet-stream"],
+          taskPushNotificationConfig: undefined,
+        },
+        metadata: undefined,
+        message: {
+          messageId: randomUUID(),
+          contextId: "",
+          taskId: "",
+          role: Role.ROLE_USER,
+          parts: partsFromMessage({ text: options.text, files: await filesFromPaths(options.files ?? []) }),
+          extensions: [],
+          metadata: { kind, answerId: options.answerId ?? "" },
+          referenceTaskIds: [],
+        },
+      }),
+    );
+    if (kind !== "ask") return JSON.parse(textOf(created)) as SendResult;
     const deadline = Date.now() + (options.waitMs ?? 9 * 60 * 1000);
     let task = created;
     while (Date.now() < deadline) {
@@ -68,10 +160,23 @@ export async function sendMessage(options: SendOptions): Promise<SendResult> {
     }
     if (!isSuccess(task.status?.state)) throw new Error(`no result for ${task.id}`);
     const result = messageFromParts(task.artifacts?.flatMap((artifact) => artifact.parts ?? []) ?? []);
-    return { text: result.text, files: await writeFiles(options.outDir ?? "agenthop-out", task.id, result.files) };
+    const snap = await readQueue(publicBase, 0, options.pass);
+    return {
+      id: task.id,
+      kind: "result",
+      event: "done",
+      text: result.text,
+      files: await writeFiles(options.outDir ?? "agenthop-out", task.id, result.files),
+      current: snap.current,
+      pending: snap.pending,
+    };
   } finally {
     globalThis.fetch = previous;
   }
+}
+
+function textOf(task: Task): string {
+  return messageFromParts(task.artifacts?.flatMap((artifact) => artifact.parts ?? []) ?? []).text;
 }
 
 function asTask(value: unknown): Task {

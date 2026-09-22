@@ -13,30 +13,38 @@ user-invocable: true
 
 一条消息就是一段文字，加上零个或多个文件。提问和回答用的是同一条消息。agent 该用的工具、该进的目录都照旧做，做完只把结果交出去。
 
-## 等对方来问
+## 挂上房间
 
-后台启动。标准输出每行一个 JSON。第一行是 `{ "code", "url" }`，把 `code` 告诉用户。进程保持运行，之后的每一行都是一条消息。
+一边后台运行 `agenthop host --json`。第一行是 `{ "code", "url" }`，把 `code` 告诉对方。对方后台运行 `agenthop join <code> --json`。两边之后每行都是队列事件，进程保持运行。
 
-```bash
-agenthop host --json
-```
+`current` 是正在做的那一条。`pending` 是排在后面的编号。`queued` 是已入队、还没轮到。`said` 是一句不需要结果的话，已经轮到。`done` 是某条要结果的消息已经有了结果。`supplement` 是并进当前这件的补充。事件里的 `text` 是正文，`files[].path` 是本机路径。
 
-`event` 为 `received` 是收到的问题，为 `sent` 是交出去的结果。两者都有 `id`、`text`、`files`。`files[].path` 是本机路径。看到 `received` 后用平时的工具做完工作，把结果交回去。文字和文件都可有可无，至少要有一样：
+同一时刻只有队头那一件在做。后面的话看得见，但要等这一件交出结果才轮到。
 
-```bash
-agenthop reply <id> "<结果>" --file <要附上的文件>
-```
+## 说话
 
-这条命令成功后，host 会再输出一行 `sent`。
-
-## 去问对方
-
-短码是 4 位数字加 3 个词。
+挂着房间的一方省略短码。不需要结果时，命令马上返回，表示已经入队：
 
 ```bash
-agenthop send <code> "<问题>" --file <要附上的文件> --json
+agenthop send <code> "<话>" --file <文件> --json
 ```
 
-`--json` 的标准输出是 `{ "text", "files" }`。`files[].path` 是对方结果里的附件，已经写在本机。没有 `--json` 时，文字在标准输出，附件路径在标准错误。
+要一个结果，就等这个编号。返回里的 `text` 是结果，`files[].path` 是结果附件：
 
-命令失败表示对方没有挂着，或房间已过期。房间在 10 分钟没有对话后消失。单个消息的附件合计不超过 512 KiB。
+```bash
+agenthop send <code> "<任务>" --ask --file <文件> --json
+```
+
+结果只交回给正在做的那一条，文字和文件都可有可无，至少要有一样：
+
+```bash
+agenthop send <code> --answer <id> "<结果>" --file <文件> --json
+```
+
+给正在做的事情补一句，而不是排到队尾：
+
+```bash
+agenthop send <code> "<补充>" --supplement --json
+```
+
+`agenthop queue` 看 `current` 和 `pending`。命令失败表示对方没有挂着，或房间已过期。房间在 10 分钟没有对话后消失。单个消息的附件合计不超过 512 KiB。

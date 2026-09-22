@@ -3,14 +3,14 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { homedir } from "node:os";
 import { A2A_PROTOCOL_VERSION, AGENT_CARD_PATH, type AgentCard } from "@a2a-js/sdk";
-import { HopExecutor } from "@agenthop/agent";
 import { DefaultRequestHandler, InMemoryTaskStore } from "@a2a-js/sdk/server";
 import { agentCardHandler, jsonRpcHandler, UserBuilder } from "@a2a-js/sdk/server/express";
 import { decodeControl, generateCode, relayEndpoints } from "@agenthop/tunnel";
 import express from "express";
 import { WebSocket } from "ws";
 import { HostBridge } from "./bridge.js";
-import { Desk, listenControl, type HostEvent, type ListedQuestion } from "./desk.js";
+import { listenControl, Room } from "./room.js";
+import { type SessionEvent } from "./talk.js";
 
 export const DEFAULT_RELAY = "https://agenthop.imatrix.tech";
 
@@ -19,14 +19,13 @@ export type HostOptions = {
   pass?: string;
   code?: string;
   home?: string;
-  onEvent?: (event: HostEvent) => void;
+  onEvent?: (event: SessionEvent) => void;
 };
 
 export type RunningHost = {
   code: string;
   url: string;
   controlUrl: string;
-  inbox: () => ListedQuestion[];
   close: () => Promise<void>;
 };
 
@@ -45,12 +44,16 @@ export async function startHost(options: HostOptions = {}): Promise<RunningHost>
   const home = options.home ?? path.join(homedir(), ".agenthop");
   const { publicBase, hostUrl } = relayEndpoints(relay, code);
   const store = new InMemoryTaskStore();
-  const desk = new Desk(store, path.join(home, "inbox"), options.onEvent);
-  const control = await listenControl(desk);
+  const room = new Room(store, path.join(home, "inbox"), options.onEvent);
+  const control = await listenControl(room);
   const app = express();
   const localUrl = await listen(app);
   const card = agentCard(localUrl.url);
-  const handler = new DefaultRequestHandler(card, store, new HopExecutor((incoming) => desk.accept(incoming)));
+  const handler = new DefaultRequestHandler(card, store, room.executor());
+  app.get("/agenthop/queue", (request, response) => {
+    const after = Number(request.query.after ?? 0);
+    response.json({ ...room.snapshot(), events: room.since(after) });
+  });
   app.use(`/${AGENT_CARD_PATH}`, agentCardHandler({ agentCardProvider: handler }));
   app.use(jsonRpcHandler({ requestHandler: handler, userBuilder: UserBuilder.noAuthentication }));
 
@@ -89,7 +92,6 @@ export async function startHost(options: HostOptions = {}): Promise<RunningHost>
     code,
     url,
     controlUrl: control.url,
-    inbox: () => desk.questions,
     close: async () => {
       if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
         await new Promise<void>((resolve) => {
@@ -107,7 +109,7 @@ export async function startHost(options: HostOptions = {}): Promise<RunningHost>
 function agentCard(localUrl: string): AgentCard {
   return {
     name: "agenthop",
-    description: "Receives a question and returns the result produced by the local agent.",
+    description: "Shares one ordered queue. One message is in progress at a time.",
     version: "0.1.0",
     provider: undefined,
     supportedInterfaces: [
@@ -132,7 +134,7 @@ function agentCard(localUrl: string): AgentCard {
       {
         id: "answer",
         name: "Answer",
-        description: "The local agent answers with text and optional file attachments.",
+        description: "Speaks on the shared queue, one message at a time.",
         tags: ["agent"],
         examples: [],
         inputModes: ["text/plain", "application/octet-stream"],

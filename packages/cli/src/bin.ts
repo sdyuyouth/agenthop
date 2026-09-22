@@ -1,8 +1,9 @@
 import { startRelay } from "@agenthop/relay-node";
+import { isValidCode, normalizeCode, relayEndpoints } from "@agenthop/tunnel";
 import { installAgenthop } from "./install.js";
-import { sendMessage } from "./send.js";
-import { type HostEvent } from "./desk.js";
-import { readHostFile, startHost } from "./host.js";
+import { DEFAULT_RELAY, readHostFile, startHost } from "./host.js";
+import { followRoom, readQueue, sendMessage, type SendKind } from "./send.js";
+import { type SessionEvent } from "./talk.js";
 
 const [command, ...rest] = process.argv.slice(2);
 const parsed = parseArgs(rest);
@@ -25,35 +26,37 @@ try {
     process.on("SIGINT", () => {
       void running.close().then(() => process.exit(0));
     });
-  } else if (command === "inbox") {
-    const host = await readHostFile();
-    const response = await fetch(`${host.controlUrl}/inbox`);
-    if (!response.ok) throw new Error(await response.text());
-    console.log(await response.text());
-  } else if (command === "reply") {
-    const id = positionals[0];
-    const text = flags.text ?? positionals.slice(1).join(" ");
-    if (!id || (!text && flags.files.length === 0)) throw new Error("usage: agenthop reply <id> <text> [--file PATH]");
-    const host = await readHostFile();
-    const response = await fetch(`${host.controlUrl}/reply`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ id, text, files: flags.files }),
-    });
-    if (!response.ok) throw new Error(await response.text());
-  } else if (command === "send") {
+  } else if (command === "join") {
     const code = positionals[0];
-    const text = flags.text ?? positionals.slice(1).join(" ");
-    if (!code || (!text && flags.files.length === 0)) throw new Error("usage: agenthop send <code> <text> [--file PATH]");
+    if (!code) throw new Error("usage: agenthop join <code>");
+    process.on("SIGINT", () => process.exit(0));
+    await followRoom({ code, relay: flags.relay, pass: flags.pass, onEvent: (event) => printEvent(event, flags.json) });
+  } else if (command === "queue" || command === "inbox") {
+    const code = positionals[0];
+    if (code) {
+      const relay = flags.relay ?? process.env.AGENTHOP_RELAY ?? DEFAULT_RELAY;
+      console.log(JSON.stringify(await readQueue(relayEndpoints(relay, normalizeCode(code)).publicBase, 0, flags.pass)));
+    } else {
+      const host = await readHostFile();
+      const response = await fetch(`${host.controlUrl}/queue`);
+      if (!response.ok) throw new Error(await response.text());
+      console.log(await response.text());
+    }
+  } else if (command === "reply" || command === "send") {
+    const kind = kindOf(flags, command);
+    const parsedSend = splitSend(positionals, command);
+    if (!parsedSend.text && flags.files.length === 0) throw new Error(sendUsage());
     const result = await sendMessage({
-      code,
-      text,
+      code: parsedSend.code,
+      text: flags.text ?? parsedSend.text,
       files: flags.files,
       relay: flags.relay,
       pass: flags.pass,
       outDir: flags.out,
+      kind,
+      answerId: command === "reply" ? positionals[0] : flags.answer,
     });
-    if (flags.json) {
+    if (flags.json || result.event !== "done") {
       console.log(JSON.stringify(result));
     } else {
       if (result.text) console.log(result.text);
@@ -75,9 +78,9 @@ try {
   } else {
     console.log("usage: agenthop install [--skill-dir DIR]");
     console.log("       agenthop host [--json] [--relay URL] [--pass SECRET]");
-    console.log("       agenthop inbox");
-    console.log("       agenthop reply <id> <text> [--file PATH]");
-    console.log("       agenthop send <code> <text> [--file PATH] [--out DIR] [--json]");
+    console.log("       agenthop join <code> [--json] [--relay URL]");
+    console.log("       agenthop queue [code]");
+    console.log("       agenthop send [code] <text> [--ask] [--answer ID] [--supplement] [--file PATH] [--json]");
     console.log("       agenthop relay [--listen HOST:PORT] [--pass SECRET]");
     process.exit(command ? 1 : 0);
   }
@@ -86,7 +89,7 @@ try {
   process.exit(1);
 }
 
-function printEvent(event: HostEvent, json: boolean): void {
+function printEvent(event: SessionEvent, json: boolean): void {
   if (json) {
     console.log(JSON.stringify(event));
     return;
@@ -94,6 +97,31 @@ function printEvent(event: HostEvent, json: boolean): void {
   console.log(`${event.event} ${event.id}`);
   if (event.text) console.log(event.text);
   for (const file of event.files) console.log(`file ${file.path}`);
+  if (event.pending.length > 0) console.log(`pending ${event.pending.join(" ")}`);
+}
+
+function kindOf(flags: Flags, command: string): SendKind {
+  const chosen = [flags.ask, Boolean(flags.answer) || command === "reply", flags.supplement].filter(Boolean).length;
+  if (chosen > 1) throw new Error(sendUsage());
+  if (flags.ask) return "ask";
+  if (flags.answer || command === "reply") return "result";
+  if (flags.supplement) return "supplement";
+  return "say";
+}
+
+function splitSend(positionals: string[], command: string): { code?: string; text: string } {
+  if (command === "reply") {
+    const id = positionals[0];
+    if (!id) throw new Error(sendUsage());
+    return { text: positionals.slice(1).join(" ") };
+  }
+  const head = positionals[0];
+  if (head && isValidCode(head)) return { code: head, text: positionals.slice(1).join(" ") };
+  return { text: positionals.join(" ") };
+}
+
+function sendUsage(): string {
+  return "usage: agenthop send [code] <text> [--ask] [--answer ID] [--supplement] [--file PATH]";
 }
 
 type Flags = {
@@ -104,11 +132,14 @@ type Flags = {
   out?: string;
   files: string[];
   skillDirs: string[];
+  answer?: string;
+  ask: boolean;
+  supplement: boolean;
   json: boolean;
 };
 
 function parseArgs(args: string[]): { flags: Flags; positionals: string[] } {
-  const flags: Flags = { files: [], skillDirs: [], json: false };
+  const flags: Flags = { files: [], skillDirs: [], ask: false, supplement: false, json: false };
   const positionals: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -119,6 +150,9 @@ function parseArgs(args: string[]): { flags: Flags; positionals: string[] } {
     else if (arg === "--text") flags.text = args[++i];
     else if (arg === "--out") flags.out = args[++i];
     else if (arg === "--file") flags.files.push(args[++i] ?? "");
+    else if (arg === "--ask") flags.ask = true;
+    else if (arg === "--supplement") flags.supplement = true;
+    else if (arg === "--answer") flags.answer = args[++i];
     else if (arg === "--skill-dir") flags.skillDirs.push(args[++i] ?? "");
     else positionals.push(arg ?? "");
   }

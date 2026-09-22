@@ -1,11 +1,12 @@
+import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { startRelay, type RunningRelay } from "@agenthop/relay-node";
 import { sendMessage } from "../src/send.js";
-import { type HostEvent } from "../src/desk.js";
 import { startHost, type RunningHost } from "../src/host.js";
+import { type SessionEvent } from "../src/talk.js";
 
 const relays: RunningRelay[] = [];
 const hosts: RunningHost[] = [];
@@ -15,8 +16,8 @@ afterEach(async () => {
   await Promise.all(relays.splice(0).map((relay) => relay.close()));
 });
 
-describe("question and result", () => {
-  it("carries text and a file in both directions", async () => {
+describe("queue", () => {
+  it("answers the current ask before later messages are delivered", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "agenthop-e2e-"));
     const home = path.join(dir, "home");
     const asked = path.join(dir, "asked.txt");
@@ -25,50 +26,80 @@ describe("question and result", () => {
     await writeFile(answered, "from the answerer");
     const relay = await startRelay();
     relays.push(relay);
-    const events: HostEvent[] = [];
+    const events: SessionEvent[] = [];
     const host = await startHost({ relay: relay.url, home, onEvent: (event) => events.push(event) });
     hosts.push(host);
 
     const pending = sendMessage({
       code: host.code,
+      kind: "ask",
       text: "what did you decide",
       files: [asked],
       relay: relay.url,
       outDir: path.join(dir, "out"),
       waitMs: 5000,
     });
+    const current = await waitFor(events, (event) => event.event === "current");
+    expect(current.text).toBe("what did you decide");
+    expect(await readFile(current.files[0]!.path, "utf8")).toBe("from the asker");
 
-    const question = await waitForQuestion(host);
-    expect(question.text).toBe("what did you decide");
-    expect(await readFile(question.files[0]!.path, "utf8")).toBe("from the asker");
-    expect(events).toEqual([
-      { event: "received", id: question.id, text: "what did you decide", files: question.files },
-    ]);
+    for (const text of ["one", "two", "three"]) {
+      const queued = await sendMessage({ code: host.code, text, relay: relay.url });
+      expect(queued.event).toBe("queued");
+      expect(queued.current).toBe(current.id);
+    }
+    expect(events.filter((event) => event.event === "said")).toEqual([]);
+    const supplement = await sendMessage({ code: host.code, kind: "supplement", text: "also tests", relay: relay.url });
+    expect(supplement.event).toBe("supplement");
+    expect(supplement.current).toBe(current.id);
 
-    const reply = await fetch(`${host.controlUrl}/reply`, {
+    const reply = await fetch(`${host.controlUrl}/message`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ id: question.id, text: "keep JSON-RPC", files: [answered] }),
+      body: JSON.stringify({
+        id: randomUUID(),
+        kind: "result",
+        answerId: current.id,
+        text: "keep JSON-RPC",
+        files: [answered],
+      }),
     });
-    expect(reply.status).toBe(204);
-
+    expect(reply.status).toBe(200);
     const result = await pending;
     expect(result.text).toBe("keep JSON-RPC");
     expect(await readFile(result.files[0]!.path, "utf8")).toBe("from the answerer");
-    expect(events[1]).toMatchObject({ event: "sent", id: question.id, text: "keep JSON-RPC" });
-    expect(events[1]!.files[0]!.path).toBe(answered);
-    expect((await fetch(`${host.controlUrl}/inbox`)).status).toBe(200);
-    expect(await (await fetch(`${host.controlUrl}/inbox`)).json()).toEqual([]);
+    expect(events.filter((event) => event.event === "said").map((event) => event.text)).toEqual(["one", "two", "three"]);
+    expect(events.some((event) => event.event === "done" && event.id === current.id)).toBe(true);
+  });
+
+  it("lets the peer answer the current ask", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "agenthop-e2e-"));
+    const relay = await startRelay();
+    relays.push(relay);
+    const events: SessionEvent[] = [];
+    const host = await startHost({ relay: relay.url, home: path.join(dir, "home"), onEvent: (event) => events.push(event) });
+    hosts.push(host);
+    const pending = sendMessage({ code: host.code, kind: "ask", text: "question", relay: relay.url, waitMs: 5000 });
+    const current = await waitFor(events, (event) => event.event === "current");
+    const answered = await sendMessage({
+      code: host.code,
+      kind: "result",
+      answerId: current.id,
+      text: "from peer",
+      relay: relay.url,
+    });
+    expect(answered.event).toBe("done");
+    expect(answered.id).toBe(current.id);
+    expect((await pending).text).toBe("from peer");
   });
 });
 
-async function waitForQuestion(host: RunningHost) {
+async function waitFor(events: SessionEvent[], ready: (event: SessionEvent) => boolean): Promise<SessionEvent> {
   const deadline = Date.now() + 3000;
   while (Date.now() < deadline) {
-    const response = await fetch(`${host.controlUrl}/inbox`);
-    const inbox = (await response.json()) as { id: string; text: string; files: { path: string }[] }[];
-    if (inbox.length > 0) return inbox[0]!;
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    const found = events.find(ready);
+    if (found) return found;
+    await new Promise((resolve) => setTimeout(resolve, 20));
   }
-  throw new Error("question did not arrive");
+  throw new Error("event did not arrive");
 }
