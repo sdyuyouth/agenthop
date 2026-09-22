@@ -32,6 +32,7 @@ type IncomingKind = "say" | "ask" | "supplement" | "result";
 export class Room {
   private readonly talk = new Talk();
   private tail: Promise<void> = Promise.resolve();
+  private watermark = 0;
 
   constructor(
     private readonly store: TaskStore,
@@ -102,7 +103,7 @@ export class Room {
     );
   }
 
-  private admit(input: {
+  private async admit(input: {
     id: string;
     messageId: string;
     from: Side;
@@ -111,19 +112,21 @@ export class Room {
     message: HopMessage;
     files: SessionFile[];
   }): Promise<Ack> {
-    return this.run(async () => {
+    const outcome = await this.run(async () => {
       if (input.kind === "result") {
         if (!input.answerId) throw new Error("answer id is required");
         const done = this.talk.answer(input.answerId, { from: input.from, text: input.message.text, files: input.files });
         await this.completeAsk(input.answerId, input.message);
-        this.onEvent?.(done);
-        for (const extra of this.talk.since(done.seq)) this.onEvent?.(extra);
-        return ackOf(done, false);
+        return { ack: ackOf(done, false), events: this.takeNew() };
       }
       if (input.kind === "supplement") {
-        const event = this.talk.supplement({ id: input.messageId, from: input.from, text: input.message.text, files: input.files });
-        this.onEvent?.(event);
-        return ackOf(event, false);
+        const event = this.talk.supplement({
+          id: input.messageId,
+          from: input.from,
+          text: input.message.text,
+          files: input.files,
+        });
+        return { ack: ackOf(event, false), events: this.takeNew() };
       }
       const event = this.talk.push({
         id: input.id,
@@ -132,9 +135,17 @@ export class Room {
         text: input.message.text,
         files: input.files,
       });
-      for (const extra of this.talk.since(event.seq - 1)) this.onEvent?.(extra);
-      return ackOf(event, input.kind === "ask");
+      return { ack: ackOf(event, input.kind === "ask"), events: this.takeNew() };
     });
+    for (const event of outcome.events) await this.onEvent?.(event);
+    return outcome.ack;
+  }
+
+  private takeNew(): SessionEvent[] {
+    const events = this.talk.since(this.watermark);
+    const last = events[events.length - 1];
+    if (last) this.watermark = last.seq;
+    return events;
   }
 
   private async completeAsk(id: string, message: HopMessage): Promise<void> {

@@ -92,7 +92,49 @@ describe("queue", () => {
     expect(answered.id).toBe(current.id);
     expect((await pending).text).toBe("from peer");
   });
+
+  it("replies with the command output when a peer message reaches the head", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "agenthop-e2e-"));
+    const relay = await startRelay();
+    relays.push(relay);
+    const events: SessionEvent[] = [];
+    const host = await startHost({
+      relay: relay.url,
+      home: path.join(dir, "home"),
+      onReceive: echoText,
+      onEvent: (event) => events.push(event),
+    });
+    hosts.push(host);
+
+    await sendMessage({ code: host.code, text: "ping", relay: relay.url });
+    const reply = await waitFor(events, (event) => event.from === "host" && event.event === "said");
+    expect(reply.text).toBe("ping");
+
+    const asked = sendMessage({ code: host.code, kind: "ask", text: "pong", relay: relay.url, waitMs: 5000 });
+    expect((await asked).text).toBe("pong");
+  });
+
+  it("leaves the ask unanswered when the command fails", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "agenthop-e2e-"));
+    const relay = await startRelay();
+    relays.push(relay);
+    const events: SessionEvent[] = [];
+    const host = await startHost({
+      relay: relay.url,
+      home: path.join(dir, "home"),
+      onReceive: "node -e \"process.exit(1)\"",
+      onEvent: (event) => events.push(event),
+    });
+    hosts.push(host);
+    await expect(
+      sendMessage({ code: host.code, kind: "ask", text: "stay", relay: relay.url, waitMs: 700 }),
+    ).rejects.toThrow(/no result/);
+    expect(events.some((event) => event.event === "current")).toBe(true);
+    expect(events.some((event) => event.event === "done")).toBe(false);
+  });
 });
+
+const echoText = `node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>process.stdout.write(JSON.parse(s).text))"`;
 
 async function waitFor(events: SessionEvent[], ready: (event: SessionEvent) => boolean): Promise<SessionEvent> {
   const deadline = Date.now() + 3000;

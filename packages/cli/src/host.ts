@@ -9,6 +9,7 @@ import { decodeControl, generateCode, relayEndpoints } from "@agenthop/tunnel";
 import express from "express";
 import { WebSocket } from "ws";
 import { HostBridge } from "./bridge.js";
+import { autoReply } from "./receive.js";
 import { listenControl, Room } from "./room.js";
 import { type SessionEvent } from "./talk.js";
 
@@ -20,6 +21,8 @@ export type HostOptions = {
   code?: string;
   home?: string;
   onEvent?: (event: SessionEvent) => void;
+  /** Shell command. Peer messages that reach the head are written to its stdin as JSON. Stdout is the reply. */
+  onReceive?: string;
 };
 
 export type RunningHost = {
@@ -44,7 +47,17 @@ export async function startHost(options: HostOptions = {}): Promise<RunningHost>
   const home = options.home ?? path.join(homedir(), ".agenthop");
   const { publicBase, hostUrl } = relayEndpoints(relay, code);
   const store = new InMemoryTaskStore();
-  const room = new Room(store, path.join(home, "inbox"), options.onEvent);
+  let replies = Promise.resolve();
+  let room!: Room;
+  room = new Room(store, path.join(home, "inbox"), (event) => {
+    options.onEvent?.(event);
+    if (!options.onReceive || event.from !== "peer") return;
+    if (event.event !== "said" && event.event !== "current") return;
+    const command = options.onReceive;
+    setTimeout(() => {
+      replies = replies.then(() => autoReply(room, command, event));
+    }, 0);
+  });
   const control = await listenControl(room);
   const app = express();
   const localUrl = await listen(app);

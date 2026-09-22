@@ -15,6 +15,7 @@ try {
     const running = await startHost({
       relay: flags.relay,
       pass: flags.pass,
+      onReceive: flags.onReceive,
       onEvent: (event) => printEvent(event, flags.json),
     });
     if (flags.json) {
@@ -77,7 +78,7 @@ try {
     });
   } else {
     console.log("usage: agenthop install [--skill-dir DIR]");
-    console.log("       agenthop host [--json] [--relay URL] [--pass SECRET]");
+    console.log("       agenthop host [--json] [--relay URL] [--pass SECRET] [--on-receive CMD]");
     console.log("       agenthop join <code> [--json] [--relay URL]");
     console.log("       agenthop queue [code]");
     console.log("       agenthop send [code] <text> [--ask] [--answer ID] [--supplement] [--file PATH] [--json]");
@@ -135,6 +136,7 @@ type Flags = {
   answer?: string;
   ask: boolean;
   supplement: boolean;
+  onReceive?: string;
   json: boolean;
 };
 
@@ -153,6 +155,7 @@ function parseArgs(args: string[]): { flags: Flags; positionals: string[] } {
     else if (arg === "--ask") flags.ask = true;
     else if (arg === "--supplement") flags.supplement = true;
     else if (arg === "--answer") flags.answer = args[++i];
+    else if (arg === "--on-receive") flags.onReceive = args[++i];
     else if (arg === "--skill-dir") flags.skillDirs.push(args[++i] ?? "");
     else positionals.push(arg ?? "");
   }

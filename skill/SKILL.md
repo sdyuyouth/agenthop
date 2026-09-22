@@ -15,7 +15,7 @@ user-invocable: true
 
 ## 挂上房间
 
-一边后台运行 `agenthop host --json`。第一行是 `{ "code", "url" }`，把 `code` 告诉对方。对方后台运行 `agenthop join <code> --json`。两边之后每行都是队列事件，进程保持运行。
+一边后台运行 `agenthop host --json`。要自动回答就加上 `--on-receive "<命令>"`：对方的消息轮到队头时，命令的标准输入收到 JSON（`id`、`from`、`text`、`files`），标准输出当作回复。退出码不是 0 则这条保持未回答。第一行是 `{ "code", "url" }`，把 `code` 告诉对方。对方后台运行 `agenthop join <code> --json`。两边之后每行都是队列事件，进程保持运行。
 
 `current` 是正在做的那一条。`pending` 是排在后面的编号。`queued` 是已入队、还没轮到。`said` 是一句不需要结果的话，已经轮到。`done` 是某条要结果的消息已经有了结果。`supplement` 是并进当前这件的补充。事件里的 `text` 是正文，`files[].path` 是本机路径。
 
