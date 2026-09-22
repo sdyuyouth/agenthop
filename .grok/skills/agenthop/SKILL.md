@@ -1,15 +1,15 @@
 ---
 name: agenthop
 description: >-
-  让两个不在同一台机器上的 agent 用短码对齐信息。用户要给对方的 agent 看本机文件、
-  把短码发给另一个 agent、收到形如 1234-word-word-word 的短码，或运行 /agenthop 时使用。
-  只调用本机 agenthop 命令。
+  让两个不在同一台机器上的 agent 交换问题和结果。用户要让对方的 agent 来问、
+  把本机 agent 的结论发回去、收到形如 1234-word-word-word 的短码、附带文件，
+  或运行 /agenthop 时使用。问题和结果是同一种消息，都可以带附件。只调用本机 agenthop 命令。
 user-invocable: true
 ---
 
 # agenthop
 
-用本机的 `agenthop` 命令。没有这条命令时，停下来让用户安装，不要改用别的方式传文件：
+用本机的 `agenthop` 命令。没有这条命令时，停下来让用户安装：
 
 ```bash
 git clone https://github.com/sdyuyouth/agenthop.git ~/src/agenthop
@@ -17,26 +17,38 @@ cd ~/src/agenthop && pnpm install
 ln -sf ~/src/agenthop/packages/cli/bin/agenthop ~/.local/bin/agenthop
 ```
 
-## 本机有资料，对方来问
+一条消息就是一段文字，加上零个或多个文件。提问和回答用的是同一条消息。agent 该用的工具、该进的目录都照旧做，做完只把结果交出去。
 
-1. 目录用用户点名的那个。用户没说就用当前目录。不要把含有密钥的目录暴露出去。
-2. 在后台启动，读标准输出的第一行 JSON：
+## 等对方来问
 
-```bash
-agenthop host --dir <目录> --json
-```
-
-3. 把 `code` 告诉用户，让用户自己转发给对方。附上这句话：「把短码 `<code>` 发给你的 agent，让它用 agenthop 来问。」
-4. 这个进程要一直留着。用户说结束再停掉。
-
-## 对方发来短码
-
-短码是 4 位数字加 3 个词，例如 `5653-wrist-mumbo-thong`。
+1. 后台启动，读标准输出第一行 JSON 里的 `code`：
 
 ```bash
-agenthop send <code> "<用户的问题>"
+agenthop host --json
 ```
 
-把标准输出原样回复用户。命令失败，或正文是 `not found`，就说明对方没有挂着，或者房间已经过期。房间在 10 分钟没有对话后消失。
+2. 把短码告诉用户，让用户转发给对方。进程保持运行。
+3. 需要看有没有新问题时：
 
-问题里写上要看的文件名，例如 `NOTES.md 里的决定是什么`。不要在问题里写 `../`。
+```bash
+agenthop inbox
+```
+
+返回 JSON 数组。每一项有 `id`、`text`，以及 `files`（本机路径）。用平时的工具读这些文件、完成工作。
+4. 把结果交回去。文字和文件都可有可无，至少要有一样：
+
+```bash
+agenthop reply <id> "<结果>" --file <要附上的文件>
+```
+
+## 去问对方
+
+短码是 4 位数字加 3 个词。
+
+```bash
+agenthop send <code> "<问题>" --file <要附上的文件> --json
+```
+
+`--json` 的标准输出是 `{ "text", "files" }`。`files[].path` 是对方结果里的附件，已经写在本机。没有 `--json` 时，文字在标准输出，附件路径在标准错误。
+
+命令失败表示对方没有挂着，或房间已过期。房间在 10 分钟没有对话后消失。单个消息的附件合计不超过 512 KiB。

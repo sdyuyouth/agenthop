@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -14,45 +14,54 @@ afterEach(async () => {
   await Promise.all(relays.splice(0).map((relay) => relay.close()));
 });
 
-describe("agenthop host and send", () => {
-  it("reads NOTES.md through a short code", async () => {
-    const parent = await mkdtemp(path.join(tmpdir(), "agenthop-e2e-"));
-    const root = path.join(parent, "notes");
-    await mkdir(root);
-    await writeFile(path.join(root, "NOTES.md"), "interface decision: keep JSON-RPC\n");
+describe("question and result", () => {
+  it("carries text and a file in both directions", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "agenthop-e2e-"));
+    const home = path.join(dir, "home");
+    const asked = path.join(dir, "asked.txt");
+    const answered = path.join(dir, "answered.txt");
+    await writeFile(asked, "from the asker");
+    await writeFile(answered, "from the answerer");
     const relay = await startRelay();
     relays.push(relay);
-    const host = await startHost({ dir: root, relay: relay.url });
+    const host = await startHost({ relay: relay.url, home });
     hosts.push(host);
-    expect(host.url.startsWith(relay.url)).toBe(true);
 
-    const reply = await sendMessage({
+    const pending = sendMessage({
       code: host.code,
-      text: "NOTES.md 里关于接口的决定是什么",
+      text: "what did you decide",
+      files: [asked],
       relay: relay.url,
+      outDir: path.join(dir, "out"),
+      waitMs: 5000,
     });
-    expect(reply).toContain("keep JSON-RPC");
 
-    const streamed = await sendMessage({
-      code: host.code,
-      text: "NOTES.md 里关于接口的决定是什么",
-      relay: relay.url,
-      stream: true,
+    const question = await waitForQuestion(host);
+    expect(question.text).toBe("what did you decide");
+    expect(await readFile(question.files[0]!.path, "utf8")).toBe("from the asker");
+
+    const reply = await fetch(`${host.controlUrl}/reply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: question.id, text: "keep JSON-RPC", files: [answered] }),
     });
-    expect(streamed.indexOf("interface")).toBeGreaterThanOrEqual(0);
-    expect(streamed.indexOf("interface")).toBeLessThan(streamed.indexOf("JSON-RPC"));
+    expect(reply.status).toBe(204);
 
-    await host.close();
-    hosts.pop();
-    expect((await fetch(`${host.url}/`)).status).toBe(404);
-  });
-
-  it("echoes when no directory is shared", async () => {
-    const relay = await startRelay();
-    relays.push(relay);
-    const host = await startHost({ relay: relay.url });
-    hosts.push(host);
-    const reply = await sendMessage({ code: host.code, text: "ping", relay: relay.url });
-    expect(reply).toContain("ping");
+    const result = await pending;
+    expect(result.text).toBe("keep JSON-RPC");
+    expect(await readFile(result.files[0]!.path, "utf8")).toBe("from the answerer");
+    expect((await fetch(`${host.controlUrl}/inbox`)).status).toBe(200);
+    expect(await (await fetch(`${host.controlUrl}/inbox`)).json()).toEqual([]);
   });
 });
+
+async function waitForQuestion(host: RunningHost) {
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    const response = await fetch(`${host.controlUrl}/inbox`);
+    const inbox = (await response.json()) as { id: string; text: string; files: { path: string }[] }[];
+    if (inbox.length > 0) return inbox[0]!;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error("question did not arrive");
+}

@@ -1,4 +1,7 @@
 import { createServer, type Server } from "node:http";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { homedir } from "node:os";
 import { A2A_PROTOCOL_VERSION, AGENT_CARD_PATH, type AgentCard } from "@a2a-js/sdk";
 import { HopExecutor } from "@agenthop/agent";
 import { DefaultRequestHandler, InMemoryTaskStore } from "@a2a-js/sdk/server";
@@ -7,30 +10,46 @@ import { decodeControl, generateCode, relayEndpoints } from "@agenthop/tunnel";
 import express from "express";
 import { WebSocket } from "ws";
 import { HostBridge } from "./bridge.js";
+import { Desk, listenControl, type ListedQuestion } from "./desk.js";
 
 export const DEFAULT_RELAY = "https://agenthop-relay.2629133574.workers.dev";
 
 export type HostOptions = {
-  dir?: string;
   relay?: string;
   pass?: string;
   code?: string;
+  home?: string;
 };
 
 export type RunningHost = {
   code: string;
   url: string;
+  controlUrl: string;
+  inbox: () => ListedQuestion[];
   close: () => Promise<void>;
 };
+
+export function hostFile(home = path.join(homedir(), ".agenthop")): string {
+  return path.join(home, "host.json");
+}
+
+export async function readHostFile(home = path.join(homedir(), ".agenthop")): Promise<{ controlUrl: string; code: string }> {
+  const raw = await readFile(hostFile(home), "utf8");
+  return JSON.parse(raw) as { controlUrl: string; code: string };
+}
 
 export async function startHost(options: HostOptions = {}): Promise<RunningHost> {
   const code = options.code ?? generateCode();
   const relay = options.relay ?? process.env.AGENTHOP_RELAY ?? DEFAULT_RELAY;
+  const home = options.home ?? path.join(homedir(), ".agenthop");
   const { publicBase, hostUrl } = relayEndpoints(relay, code);
+  const store = new InMemoryTaskStore();
+  const desk = new Desk(store, path.join(home, "inbox"));
+  const control = await listenControl(desk);
   const app = express();
   const localUrl = await listen(app);
-  const card = agentCard(localUrl.url, options.dir);
-  const handler = new DefaultRequestHandler(card, new InMemoryTaskStore(), new HopExecutor(options.dir));
+  const card = agentCard(localUrl.url);
+  const handler = new DefaultRequestHandler(card, store, new HopExecutor((incoming) => desk.accept(incoming)));
   app.use(`/${AGENT_CARD_PATH}`, agentCardHandler({ agentCardProvider: handler }));
   app.use(jsonRpcHandler({ requestHandler: handler, userBuilder: UserBuilder.noAuthentication }));
 
@@ -54,18 +73,22 @@ export async function startHost(options: HostOptions = {}): Promise<RunningHost>
         reject(new Error("expected ready"));
         return;
       }
-      const control = decodeControl(data.toString());
-      if (control.type === "error") reject(new Error(control.code));
-      else if (control.type === "ready") resolve(control.publicBase);
+      const controlMessage = decodeControl(data.toString());
+      if (controlMessage.type === "error") reject(new Error(controlMessage.code));
+      else if (controlMessage.type === "ready") resolve(controlMessage.publicBase);
       else reject(new Error("bad_control"));
     });
   });
   ws.send(JSON.stringify({ v: 1, type: "open", code }));
   const url = await ready;
+  await mkdir(home, { recursive: true });
+  await writeFile(hostFile(home), JSON.stringify({ code, controlUrl: control.url }));
 
   return {
     code,
     url,
+    controlUrl: control.url,
+    inbox: () => desk.questions,
     close: async () => {
       if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
         await new Promise<void>((resolve) => {
@@ -73,25 +96,17 @@ export async function startHost(options: HostOptions = {}): Promise<RunningHost>
           ws.close();
         });
       }
+      await control.close();
       await new Promise<void>((resolve, reject) => localUrl.server.close((error) => (error ? reject(error) : resolve())));
+      await rm(hostFile(home), { force: true });
     },
   };
 }
 
-function agentCard(localUrl: string, dir?: string): AgentCard {
-  const skill = (id: string, name: string, description: string, tags: string[]) => ({
-    id,
-    name,
-    description,
-    tags,
-    examples: [] as string[],
-    inputModes: ["text/plain"],
-    outputModes: ["text/plain"],
-    securityRequirements: [],
-  });
+function agentCard(localUrl: string): AgentCard {
   return {
     name: "agenthop",
-    description: dir ? "Reads text files shared for this pairing." : "Echoes a message.",
+    description: "Receives a question and returns the result produced by the local agent.",
     version: "0.1.0",
     provider: undefined,
     supportedInterfaces: [
@@ -103,20 +118,26 @@ function agentCard(localUrl: string, dir?: string): AgentCard {
       },
     ],
     capabilities: {
-      streaming: true,
+      streaming: false,
       pushNotifications: false,
       extendedAgentCard: false,
       extensions: [],
     },
     securitySchemes: {},
     securityRequirements: [],
-    defaultInputModes: ["text/plain"],
-    defaultOutputModes: ["text/plain"],
+    defaultInputModes: ["text/plain", "application/octet-stream"],
+    defaultOutputModes: ["text/plain", "application/octet-stream"],
     skills: [
-      skill("echo", "Echo", "Repeats the message when no file is named.", ["echo"]),
-      ...(dir
-        ? [skill("read_text", "Read text", "Reads a UTF-8 file named in the message from the host directory.", ["files"])]
-        : []),
+      {
+        id: "answer",
+        name: "Answer",
+        description: "The local agent answers with text and optional file attachments.",
+        tags: ["agent"],
+        examples: [],
+        inputModes: ["text/plain", "application/octet-stream"],
+        outputModes: ["text/plain", "application/octet-stream"],
+        securityRequirements: [],
+      },
     ],
     signatures: [],
   };

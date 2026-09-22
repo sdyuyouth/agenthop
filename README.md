@@ -17,23 +17,27 @@ mkdir -p ~/.grok/skills
 ln -sf ~/src/agenthop/.grok/skills/agenthop ~/.grok/skills/agenthop
 ```
 
-有资料的一方：
+有资料、准备回答的一方先挂上房间，把短码发给对方：
 
 ```bash
-agenthop host --dir ~/notes
+agenthop host
 # code 4821-amber-river-maple
-# url  https://agenthop-relay.2629133574.workers.dev/r/4821-amber-river-maple/
 ```
 
-来问的一方，或对方的 agent：
+对方的 agent 发来问题。本机 agent 用自己的工具做完，再把结果交回去。问题和结果是同一种消息，都可以带文件：
 
 ```bash
-agenthop send 4821-amber-river-maple "NOTES.md 里关于接口的决定是什么"
+agenthop inbox
+agenthop reply <id> "接口继续用 JSON-RPC" --file ./decision.md
 ```
 
-`host` serves an official `@a2a-js/sdk` agent on `127.0.0.1` and dials out to the relay. `send` is a thin client around `ClientFactory`. Any other A2A client can use the printed URL directly.
+来问的一方：
 
-With `--dir`, a file name in the message is read from that directory. A path that leaves the directory is refused. Without `--dir`, the agent echoes the message.
+```bash
+agenthop send 4821-amber-river-maple "接口怎么定" --file ./draft.md
+```
+
+文字打在标准输出。对方结果里的附件写到 `agenthop-out/`，路径打在标准错误。`--json` 把文字和路径合成一个 JSON。
 
 ## Relay
 
