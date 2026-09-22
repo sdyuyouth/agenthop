@@ -1,4 +1,3 @@
-#!/usr/bin/env -S npx tsx
 import { startRelay } from "@agenthop/relay-node";
 import { sendMessage } from "./send.js";
 import { startHost } from "./host.js";
@@ -9,8 +8,12 @@ try {
   if (command === "host") {
     const flags = flagsOf(rest);
     const running = await startHost({ dir: flags.dir, relay: flags.relay, pass: flags.pass });
-    console.log(`code ${running.code}`);
-    console.log(`url  ${running.url}`);
+    if (flags.json) {
+      console.log(JSON.stringify({ code: running.code, url: running.url }));
+    } else {
+      console.log(`code ${running.code}`);
+      console.log(`url  ${running.url}`);
+    }
     process.on("SIGINT", () => {
       void running.close().then(() => process.exit(0));
     });
@@ -34,7 +37,7 @@ try {
       void running.close().then(() => process.exit(0));
     });
   } else {
-    console.log("usage: agenthop host [--dir PATH] [--relay URL] [--pass SECRET]");
+    console.log("usage: agenthop host [--dir PATH] [--json] [--relay URL] [--pass SECRET]");
     console.log("       agenthop send <code> <text> [--relay URL] [--pass SECRET] [--stream]");
     console.log("       agenthop relay [--listen HOST:PORT] [--pass SECRET]");
     process.exit(command ? 1 : 0);
@@ -44,11 +47,15 @@ try {
   process.exit(1);
 }
 
-function flagsOf(args: string[]): { dir?: string; relay?: string; pass?: string; listen?: string; stream: boolean } {
-  const flags: { dir?: string; relay?: string; pass?: string; listen?: string; stream: boolean } = { stream: false };
+function flagsOf(args: string[]): { dir?: string; relay?: string; pass?: string; listen?: string; stream: boolean; json: boolean } {
+  const flags: { dir?: string; relay?: string; pass?: string; listen?: string; stream: boolean; json: boolean } = {
+    stream: false,
+    json: false,
+  };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--stream") flags.stream = true;
+    if (arg === "--json") flags.json = true;
     if (arg === "--dir") flags.dir = args[++i];
     if (arg === "--relay") flags.relay = args[++i];
     if (arg === "--pass") flags.pass = args[++i];

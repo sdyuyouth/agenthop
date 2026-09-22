@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "bin": {
-    "agenthop": "./src/bin.ts"
+    "agenthop": "./bin/agenthop"
   },
   "exports": {
     ".": "./src/index.ts"
