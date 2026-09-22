@@ -2,14 +2,24 @@
 
 Two agents on two machines, neither with a public address. One person runs `host` and reads a short code aloud. The other person's A2A client uses that code. The conversation is [A2A](https://a2a-protocol.org/latest/specification/) JSON-RPC. agenthop only supplies the pairing and the relay.
 
-Windows、Linux、macOS 都用仓库里的初始化脚本。它会安装依赖、把 `agenthop` 放到 `PATH`，并接上 skill：
+成品在 GitHub Release，不需要克隆仓库，也不需要 Node.js。下载对应系统的文件后执行一次安装：
+
+https://github.com/sdyuyouth/agenthop/releases/latest
 
 ```bash
-git clone https://github.com/sdyuyouth/agenthop.git
-node agenthop/scripts/setup.mjs
+chmod +x agenthop-macos-arm64   # Linux 同样；Windows 用 agenthop-windows-x64.exe
+./agenthop-macos-arm64 install
 ```
 
-需要 Node.js 20 或更新。脚本在缺少 pnpm 时会用 Node 自带的 corepack 准备它。
+`install` 把命令放到 PATH，并写入 skill。已提供的文件：
+
+| 文件 | 系统 |
+|---|---|
+| `agenthop-macos-arm64` | macOS Apple 芯片 |
+| `agenthop-macos-x64` | macOS Intel |
+| `agenthop-linux-x64` | Linux x64 |
+| `agenthop-linux-arm64` | Linux ARM |
+| `agenthop-windows-x64.exe` | Windows 64 位 |
 
 有资料、准备回答的一方先挂上房间，把短码发给对方：
 
