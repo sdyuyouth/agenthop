@@ -2,6 +2,7 @@ import { writeSync } from "node:fs";
 import { startRelay } from "@agenthop/relay-node";
 import { isValidCode, normalizeCode, relayEndpoints } from "@agenthop/tunnel";
 import { installAgenthop } from "./install.js";
+import { updateAgenthop } from "./update.js";
 import { DEFAULT_RELAY, readHostFile, startHost } from "./host.js";
 import { followRoom, readQueue, sendMessage, type SendKind } from "./send.js";
 import { type SessionEvent } from "./talk.js";
@@ -72,6 +73,8 @@ try {
     }
   } else if (command === "install") {
     installAgenthop({ skillDirs: flags.skillDirs });
+  } else if (command === "update" || command === "upgrade" || command === "self-update") {
+    await updateAgenthop({ check: flags.check, force: flags.force });
   } else if (command === "relay") {
     const [host, portText] = (flags.listen ?? "127.0.0.1:8787").split(":");
     const running = await startRelay({
@@ -85,6 +88,7 @@ try {
     });
   } else {
     console.log("usage: agenthop install [--skill-dir DIR]");
+    console.log("       agenthop update [--check] [--force]");
     console.log("       agenthop host [--json] [--relay URL] [--pass SECRET] [--on-receive CMD]");
     console.log("       agenthop join <code> [--json] [--relay URL] [--on-receive CMD]");
     console.log("       agenthop queue [code]");
@@ -148,11 +152,13 @@ type Flags = {
   ask: boolean;
   supplement: boolean;
   onReceive?: string;
+  check: boolean;
+  force: boolean;
   json: boolean;
 };
 
 function parseArgs(args: string[]): { flags: Flags; positionals: string[] } {
-  const flags: Flags = { files: [], skillDirs: [], ask: false, supplement: false, json: false };
+  const flags: Flags = { files: [], skillDirs: [], ask: false, supplement: false, check: false, force: false, json: false };
   const positionals: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -167,6 +173,8 @@ function parseArgs(args: string[]): { flags: Flags; positionals: string[] } {
     else if (arg === "--supplement") flags.supplement = true;
     else if (arg === "--answer") flags.answer = args[++i];
     else if (arg === "--on-receive") flags.onReceive = args[++i];
+    else if (arg === "--check") flags.check = true;
+    else if (arg === "--force") flags.force = true;
     else if (arg === "--skill-dir") flags.skillDirs.push(args[++i] ?? "");
     else positionals.push(arg ?? "");
   }

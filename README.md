@@ -11,7 +11,7 @@ chmod +x agenthop-macos-arm64   # Linux 同样；Windows 用 agenthop-windows-x6
 ./agenthop-macos-arm64 install --skill-dir <技能目录>
 ```
 
-`install` 把命令放到 PATH，并把 `SKILL.md` 写到 `~/.agenthop/SKILL.md`。`--skill-dir` 可重复，每次把同一份 `SKILL.md` 写进调用方自己的技能目录。已提供的文件：
+`install` 把命令放到 PATH，并把 `SKILL.md` 写到 `~/.agenthop/SKILL.md`。`--skill-dir` 可重复，每次把同一份 `SKILL.md` 写进调用方自己的技能目录。装好以后用 `agenthop update` 换成新版本，`--check` 只查询，`--force` 重新安装。`upgrade` 和 `self-update` 相同。已提供的文件：
 
 | 文件 | 系统 |
 |---|---|

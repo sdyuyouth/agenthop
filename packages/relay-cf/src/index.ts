@@ -172,12 +172,48 @@ export class Room extends DurableObject<Env> {
   }
 }
 
+const RELEASE_FILES = new Set([
+  "agenthop-macos-arm64",
+  "agenthop-macos-x64",
+  "agenthop-linux-x64",
+  "agenthop-linux-arm64",
+  "agenthop-windows-x64.exe",
+]);
+
+async function releaseResponse(url: URL): Promise<Response | null> {
+  if (url.pathname === "/latest") {
+    const upstream = await fetch("https://github.com/sdyuyouth/agenthop/releases/latest", {
+      redirect: "manual",
+      headers: { "user-agent": "agenthop" },
+    });
+    const tag = upstream.headers.get("location")?.split("/tag/")[1]?.replace(/\/$/, "") ?? "";
+    if (!tag) return new Response("release lookup failed", { status: 502 });
+    return Response.json({ tag, assets: [...RELEASE_FILES] });
+  }
+  if (!url.pathname.startsWith("/download/")) return null;
+  const name = decodeURIComponent(url.pathname.slice("/download/".length));
+  if (!RELEASE_FILES.has(name)) return new Response("not found", { status: 404 });
+  const upstream = await fetch(`https://github.com/sdyuyouth/agenthop/releases/latest/download/${name}`, {
+    redirect: "follow",
+    headers: { "user-agent": "agenthop" },
+  });
+  return new Response(upstream.body, {
+    status: upstream.status,
+    headers: {
+      "content-type": "application/octet-stream",
+      ...(upstream.headers.get("content-length") ? { "content-length": upstream.headers.get("content-length")! } : {}),
+    },
+  });
+}
+
 export default {
   async fetch(request, env): Promise<Response> {
+    const url = new URL(request.url);
+    const release = await releaseResponse(url);
+    if (release) return release;
     if (env.RELAY_PASS && !safeEqual(request.headers.get("authorization") ?? "", `Bearer ${env.RELAY_PASS}`)) {
       return new Response("unauthorized", { status: 401 });
     }
-    const url = new URL(request.url);
     const ip = request.headers.get("cf-connecting-ip") ?? "local";
     if (url.pathname.startsWith("/host/")) {
       const code = normalizeCode(decodeURIComponent(url.pathname.slice("/host/".length)));

@@ -71,7 +71,7 @@ function installCommand(): string {
   return dest;
 }
 
-function ensureDir(dir: string): void {
+export function ensureDir(dir: string): void {
   const absolute = resolve(dir);
   const { root } = parse(absolute);
   let current = root;

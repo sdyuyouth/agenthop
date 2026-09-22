@@ -5,6 +5,7 @@
   "main": "src/index.ts",
   "compatibility_date": "2025-12-10",
   "observability": { "enabled": false },
+  "workers_dev": true,
   "routes": [{ "pattern": "agenthop.imatrix.tech", "custom_domain": true }],
   "durable_objects": {
     "bindings": [
