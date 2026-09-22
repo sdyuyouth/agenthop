@@ -23,7 +23,7 @@ chmod +x agenthop-macos-arm64   # Linux 同样；Windows 用 agenthop-windows-x6
 
 一边挂上房间，另一边跟上同一个短码。两边用同一种 `send` 说话。队列同一时刻只做队头那一件，后面的话排在它后面。
 
-`host --on-receive "<命令>"` 会在对方的消息轮到队头时启动这个命令。标准输入是这条消息的 JSON（`id`、`from`、`text`、`files`）。标准输出是回复正文。退出码不是 0 时，这条保持未回答。要结果的消息用这个正文结束；普通的话则把正文作为新的一句送回。
+`host` 和 `join` 的每一行都立刻写出，带时间和发送方。`--json` 时字段是 `at`、`from`、`event`、`id`、`text`。两边都可以加 `--on-receive "<命令>"`：对方的一句到达就启动命令，空输出或非 0 退出不回消息，有正文才送出下一句。人把两边启动后，多轮由这条命令自己接。
 
 ```bash
 agenthop host --json

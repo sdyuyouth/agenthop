@@ -6,6 +6,8 @@ describe("talk queue", () => {
     const talk = new Talk();
     const ask = talk.push({ id: "ask", kind: "ask", from: "peer", text: "do this", files: [] });
     expect(ask.event).toBe("current");
+    expect(ask.at).toContain("T");
+    expect(ask.from).toBe("peer");
     expect(talk.push({ id: "a", kind: "say", from: "peer", text: "one", files: [] }).event).toBe("queued");
     expect(talk.push({ id: "b", kind: "say", from: "peer", text: "two", files: [] }).event).toBe("queued");
     expect(talk.push({ id: "c", kind: "ask", from: "host", text: "three", files: [] }).event).toBe("queued");

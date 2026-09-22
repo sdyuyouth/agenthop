@@ -3,25 +3,42 @@ import { randomUUID } from "node:crypto";
 import type { Room } from "./room.js";
 import type { SessionEvent } from "./talk.js";
 
-/** Run the operator's command for a peer message that has reached the head of the queue. */
-export async function autoReply(room: Room, command: string, event: SessionEvent): Promise<void> {
+/** A message from the other side. Queued lines stay in the log until they reach the head. */
+export function isInbound(event: SessionEvent, seat: "host" | "join"): boolean {
+  if (event.event === "queued") return false;
+  return event.from === (seat === "host" ? "peer" : "host");
+}
+
+/** Run the command. Empty stdout or a non-zero exit sends nothing, so the other side is not answered by accident. */
+export async function autoReply(
+  command: string,
+  event: SessionEvent,
+  respond: (text: string) => Promise<void>,
+): Promise<void> {
   const text = commandOutput(command, event);
-  if (text === undefined) return;
+  if (!text) return;
   try {
-    if (event.event === "current") {
-      await room.local({ id: randomUUID(), text, files: [], kind: "result", answerId: event.id });
-      return;
-    }
-    await room.local({ id: randomUUID(), text, files: [], kind: "say" });
+    await respond(text);
   } catch (error) {
     console.error(`on-receive could not reply to ${event.id}: ${error instanceof Error ? error.message : error}`);
   }
 }
 
+export async function replyOnHost(room: Room, event: SessionEvent, text: string): Promise<void> {
+  const id = randomUUID();
+  if (event.event === "current") {
+    await room.local({ id, text, files: [], kind: "result", answerId: event.id });
+    return;
+  }
+  await room.local({ id, text, files: [], kind: "say" });
+}
+
 function commandOutput(command: string, event: SessionEvent): string | undefined {
   const payload = JSON.stringify({
+    at: event.at,
     id: event.id,
     from: event.from,
+    event: event.event,
     text: event.text,
     files: event.files.map((file) => file.path),
   });

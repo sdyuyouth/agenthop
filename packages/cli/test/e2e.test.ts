@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { startRelay, type RunningRelay } from "@agenthop/relay-node";
-import { sendMessage } from "../src/send.js";
+import { followRoom, sendMessage } from "../src/send.js";
 import { startHost, type RunningHost } from "../src/host.js";
 import { type SessionEvent } from "../src/talk.js";
 
@@ -40,6 +40,8 @@ describe("queue", () => {
       waitMs: 5000,
     });
     const current = await waitFor(events, (event) => event.event === "current");
+    expect(current.at).toContain("T");
+    expect(current.from).toBe("peer");
     expect(current.text).toBe("what did you decide");
     expect(await readFile(current.files[0]!.path, "utf8")).toBe("from the asker");
 
@@ -131,6 +133,33 @@ describe("queue", () => {
     ).rejects.toThrow(/no result/);
     expect(events.some((event) => event.event === "current")).toBe(true);
     expect(events.some((event) => event.event === "done")).toBe(false);
+  });
+
+  it("wakes the joined side when the host speaks", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "agenthop-e2e-"));
+    const relay = await startRelay();
+    relays.push(relay);
+    const events: SessionEvent[] = [];
+    const host = await startHost({ relay: relay.url, home: path.join(dir, "home"), onEvent: (event) => events.push(event) });
+    hosts.push(host);
+    const stop = new AbortController();
+    const followed = followRoom({
+      code: host.code,
+      relay: relay.url,
+      signal: stop.signal,
+      onReceive: echoText,
+      onEvent: () => undefined,
+    });
+    const sent = await fetch(`${host.controlUrl}/message`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: randomUUID(), kind: "say", text: "hello" }),
+    });
+    expect(sent.status).toBe(200);
+    const reply = await waitFor(events, (event) => event.from === "peer" && event.text === "hello");
+    expect(reply.at).toContain("T");
+    stop.abort();
+    await followed;
   });
 });
 

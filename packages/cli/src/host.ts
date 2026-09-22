@@ -9,7 +9,7 @@ import { decodeControl, generateCode, relayEndpoints } from "@agenthop/tunnel";
 import express from "express";
 import { WebSocket } from "ws";
 import { HostBridge } from "./bridge.js";
-import { autoReply } from "./receive.js";
+import { autoReply, isInbound, replyOnHost } from "./receive.js";
 import { listenControl, Room } from "./room.js";
 import { type SessionEvent } from "./talk.js";
 
@@ -51,11 +51,10 @@ export async function startHost(options: HostOptions = {}): Promise<RunningHost>
   let room!: Room;
   room = new Room(store, path.join(home, "inbox"), (event) => {
     options.onEvent?.(event);
-    if (!options.onReceive || event.from !== "peer") return;
-    if (event.event !== "said" && event.event !== "current") return;
+    if (!options.onReceive || !isInbound(event, "host")) return;
     const command = options.onReceive;
     setTimeout(() => {
-      replies = replies.then(() => autoReply(room, command, event));
+      replies = replies.then(() => autoReply(command, event, (text) => replyOnHost(room, event, text)));
     }, 0);
   });
   const control = await listenControl(room);

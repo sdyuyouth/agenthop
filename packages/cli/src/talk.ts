@@ -4,6 +4,7 @@ export type SessionEventName = "queued" | "current" | "supplement" | "said" | "d
 
 export type SessionEvent = {
   seq: number;
+  at: string;
   event: SessionEventName;
   id: string;
   kind: "say" | "ask" | "supplement" | "result";
@@ -93,6 +94,7 @@ export class Talk {
   ): SessionEvent {
     const row: SessionEvent = {
       seq: ++this.seq,
+      at: new Date().toISOString(),
       event,
       id: item.id,
       kind: item.kind,

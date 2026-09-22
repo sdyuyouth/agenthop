@@ -6,6 +6,7 @@ import { ClientFactory } from "@a2a-js/sdk/client";
 import { filesFromPaths, messageFromParts, partsFromMessage, safeName, type HopFile } from "@agenthop/agent";
 import { normalizeCode, relayEndpoints } from "@agenthop/tunnel";
 import { DEFAULT_RELAY, readHostFile } from "./host.js";
+import { autoReply, isInbound } from "./receive.js";
 import { type Ack } from "./room.js";
 import { type SessionEvent } from "./talk.js";
 
@@ -44,16 +45,35 @@ export async function followRoom(options: {
   code: string;
   relay?: string;
   pass?: string;
+  onReceive?: string;
+  signal?: AbortSignal;
   onEvent: (event: SessionEvent) => void;
 }): Promise<void> {
   const relay = options.relay ?? process.env.AGENTHOP_RELAY ?? DEFAULT_RELAY;
-  const { publicBase } = relayEndpoints(relay, normalizeCode(options.code));
+  const code = normalizeCode(options.code);
+  const { publicBase } = relayEndpoints(relay, code);
   let after = 0;
+  let replies = Promise.resolve();
   for (;;) {
+    if (options.signal?.aborted) return;
     const body = await readQueue(publicBase, after, options.pass);
     for (const event of body.events) {
       options.onEvent(event);
       after = event.seq;
+      if (!options.onReceive || !isInbound(event, "join")) continue;
+      const command = options.onReceive;
+      replies = replies.then(() =>
+        autoReply(command, event, async (text) => {
+          await sendMessage({
+            code,
+            text,
+            relay,
+            pass: options.pass,
+            kind: event.event === "current" ? "result" : "say",
+            answerId: event.event === "current" ? event.id : undefined,
+          });
+        }),
+      );
     }
     await delay(300);
   }

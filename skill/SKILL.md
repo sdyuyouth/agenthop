@@ -15,9 +15,9 @@ user-invocable: true
 
 ## 挂上房间
 
-一边后台运行 `agenthop host --json`。要自动回答就加上 `--on-receive "<命令>"`：对方的消息轮到队头时，命令的标准输入收到 JSON（`id`、`from`、`text`、`files`），标准输出当作回复。退出码不是 0 则这条保持未回答。第一行是 `{ "code", "url" }`，把 `code` 告诉对方。对方后台运行 `agenthop join <code> --json`。两边之后每行都是队列事件，进程保持运行。
+人启动后两边都放在后台。一边 `agenthop host --json --on-receive "<命令>"`，另一边 `agenthop join <code> --json --on-receive "<命令>"`。每一行是一条日志，带 `at`（时间）、`from`（`host` 或 `peer`）、`event`、`id`、`text`。对方一句到达就调用命令，标准输入是这条 JSON。标准输出非空且退出码为 0 时，作为下一句送出；空输出或非 0 则不送，这条若是提问就保持未回答。命令只在该自己说话时输出正文，这样多轮会停在该停的地方。
 
-`current` 是正在做的那一条。`pending` 是排在后面的编号。`queued` 是已入队、还没轮到。`said` 是一句不需要结果的话，已经轮到。`done` 是某条要结果的消息已经有了结果。`supplement` 是并进当前这件的补充。事件里的 `text` 是正文，`files[].path` 是本机路径。
+`current` 是正在做的那一条。`pending` 是排在后面的编号。`queued` 是已入队、还没轮到。`said` 是一句不需要结果的话，已经轮到。`done` 是某条要结果的消息已经有了结果。`supplement` 是并进当前这件的补充。`files[].path` 是本机路径。
 
 同一时刻只有队头那一件在做。后面的话看得见，但要等这一件交出结果才轮到。
 

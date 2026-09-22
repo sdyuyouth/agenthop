@@ -1,3 +1,4 @@
+import { writeSync } from "node:fs";
 import { startRelay } from "@agenthop/relay-node";
 import { isValidCode, normalizeCode, relayEndpoints } from "@agenthop/tunnel";
 import { installAgenthop } from "./install.js";
@@ -19,10 +20,10 @@ try {
       onEvent: (event) => printEvent(event, flags.json),
     });
     if (flags.json) {
-      console.log(JSON.stringify({ code: running.code, url: running.url }));
+      writeLine(JSON.stringify({ at: new Date().toISOString(), code: running.code, url: running.url }));
     } else {
-      console.log(`code ${running.code}`);
-      console.log(`url  ${running.url}`);
+      writeLine(`${new Date().toISOString()} code ${running.code}`);
+      writeLine(`${new Date().toISOString()} url  ${running.url}`);
     }
     process.on("SIGINT", () => {
       void running.close().then(() => process.exit(0));
@@ -31,7 +32,13 @@ try {
     const code = positionals[0];
     if (!code) throw new Error("usage: agenthop join <code>");
     process.on("SIGINT", () => process.exit(0));
-    await followRoom({ code, relay: flags.relay, pass: flags.pass, onEvent: (event) => printEvent(event, flags.json) });
+    await followRoom({
+      code,
+      relay: flags.relay,
+      pass: flags.pass,
+      onReceive: flags.onReceive,
+      onEvent: (event) => printEvent(event, flags.json),
+    });
   } else if (command === "queue" || command === "inbox") {
     const code = positionals[0];
     if (code) {
@@ -79,7 +86,7 @@ try {
   } else {
     console.log("usage: agenthop install [--skill-dir DIR]");
     console.log("       agenthop host [--json] [--relay URL] [--pass SECRET] [--on-receive CMD]");
-    console.log("       agenthop join <code> [--json] [--relay URL]");
+    console.log("       agenthop join <code> [--json] [--relay URL] [--on-receive CMD]");
     console.log("       agenthop queue [code]");
     console.log("       agenthop send [code] <text> [--ask] [--answer ID] [--supplement] [--file PATH] [--json]");
     console.log("       agenthop relay [--listen HOST:PORT] [--pass SECRET]");
@@ -92,13 +99,17 @@ try {
 
 function printEvent(event: SessionEvent, json: boolean): void {
   if (json) {
-    console.log(JSON.stringify(event));
+    writeLine(JSON.stringify(event));
     return;
   }
-  console.log(`${event.event} ${event.id}`);
-  if (event.text) console.log(event.text);
-  for (const file of event.files) console.log(`file ${file.path}`);
-  if (event.pending.length > 0) console.log(`pending ${event.pending.join(" ")}`);
+  writeLine(`${event.at} ${event.from} ${event.event} ${event.id}`);
+  if (event.text) writeLine(event.text);
+  for (const file of event.files) writeLine(`file ${file.path}`);
+  if (event.pending.length > 0) writeLine(`pending ${event.pending.join(" ")}`);
+}
+
+function writeLine(line: string): void {
+  writeSync(1, `${line}\n`);
 }
 
 function kindOf(flags: Flags, command: string): SendKind {
