@@ -1,0 +1,148 @@
+import { afterEach, describe, expect, it } from "vitest";
+import { WebSocket } from "ws";
+import { decodeFrame, encodeFrame } from "@agenthop/tunnel";
+import { startRelay, type RunningRelay } from "../src/index.js";
+
+const openRelays: RunningRelay[] = [];
+
+afterEach(async () => {
+  await Promise.all(openRelays.splice(0).map((relay) => relay.close()));
+});
+
+describe("node relay", () => {
+  it("pairs, rewrites the card, echoes JSON, and streams in order", async () => {
+    const relay = await startRelay();
+    openRelays.push(relay);
+    const code = "1111-acid-acorn-acre";
+    const host = await connectHost(relay.url, code);
+    const card = await fetch(`${relay.url}/r/${code}/.well-known/agent-card.json`);
+    expect(card.status).toBe(200);
+    const cardText = await card.text();
+    expect(cardText).not.toContain("127.0.0.1:9");
+    expect(JSON.parse(cardText).supportedInterfaces[0].url).toBe(`${relay.url}/r/${code}/`);
+
+    const echoed = await fetch(`${relay.url}/r/${code}/`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: '{"jsonrpc":"2.0","method":"SendMessage"}',
+    });
+    expect(await echoed.text()).toBe('{"jsonrpc":"2.0","method":"SendMessage"}');
+
+    const streamed = await fetch(`${relay.url}/r/${code}/`, {
+      method: "POST",
+      body: "stream-please",
+    });
+    expect(streamed.headers.get("content-type")).toContain("text/event-stream");
+    expect(await streamed.text()).toBe("onetwo");
+    host.close();
+  });
+
+  it("rejects a second host, unknown codes, an oversized body, and a closed host", async () => {
+    const relay = await startRelay();
+    openRelays.push(relay);
+    const code = "1111-acid-acorn-acre";
+    const host = await connectHost(relay.url, code);
+    const second = new WebSocket(`${relay.url.replace("http", "ws")}/host/${code}`);
+    const error = await onceMessage(second);
+    expect(JSON.parse(String(error)).code).toBe("room_taken");
+
+    expect((await fetch(`${relay.url}/r/2222-acid-acorn-acre/`)).status).toBe(404);
+
+    const big = await fetch(`${relay.url}/r/${code}/`, { method: "POST", body: "x".repeat(1024 * 1024 + 1) });
+    expect(big.status).toBe(413);
+
+    host.close();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect((await fetch(`${relay.url}/r/${code}/`)).status).toBe(404);
+  });
+
+  it("requires the relay password and expires idle rooms", async () => {
+    let now = 0;
+    const relay = await startRelay({ pass: "secret", now: () => now, idleMs: 1_000 });
+    openRelays.push(relay);
+    expect((await fetch(`${relay.url}/r/1111-acid-acorn-acre/`)).status).toBe(401);
+    const code = "1111-acid-acorn-acre";
+    const host = await connectHost(relay.url, code, "secret");
+    expect((await fetch(`${relay.url}/r/${code}/`, { headers: { authorization: "Bearer secret" } })).status).toBe(200);
+    now = 1_000;
+    relay.sweep();
+    host.close();
+    expect(
+      (await fetch(`${relay.url}/r/${code}/`, { headers: { authorization: "Bearer secret" } })).status,
+    ).toBe(404);
+  });
+
+  it("rate limits missing codes", async () => {
+    const relay = await startRelay();
+    openRelays.push(relay);
+    let last = 0;
+    for (let i = 0; i < 61; i++) {
+      last = (await fetch(`${relay.url}/r/2222-acid-acorn-acre/`)).status;
+    }
+    expect(last).toBe(429);
+  });
+});
+
+async function connectHost(relayUrl: string, code: string, pass?: string): Promise<WebSocket> {
+  const ws = new WebSocket(`${relayUrl.replace("http", "ws")}/host/${code}`, {
+    headers: pass ? { authorization: `Bearer ${pass}` } : undefined,
+  });
+  await new Promise<void>((resolve, reject) => {
+    ws.once("open", () => resolve());
+    ws.once("error", reject);
+  });
+  const requests = new Map<number, { path: string; body: Uint8Array[] }>();
+  ws.on("message", (data, isBinary) => {
+    if (!isBinary) return;
+    const frame = decodeFrame(new Uint8Array(data as Buffer));
+    if (frame.type === "request-start") requests.set(frame.requestId, { path: frame.path, body: [] });
+    if (frame.type === "request-body") requests.get(frame.requestId)?.body.push(frame.body);
+    if (frame.type !== "request-end") return;
+    const req = requests.get(frame.requestId)!;
+    const payload = new TextDecoder().decode(concat(req.body));
+    if (req.path.startsWith("/.well-known/agent-card.json")) {
+      const card = JSON.stringify({
+        name: "local",
+        url: "http://127.0.0.1:9/",
+        supportedInterfaces: [{ url: "http://127.0.0.1:9/", protocolBinding: "JSONRPC", protocolVersion: "1.0" }],
+      });
+      send(ws, frame.requestId, 200, "application/json", card);
+    } else if (payload === "stream-please") {
+      ws.send(encodeFrame({ type: "response-start", requestId: frame.requestId, status: 200, headers: [["content-type", "text/event-stream"]] }));
+      ws.send(encodeFrame({ type: "response-body", requestId: frame.requestId, body: new TextEncoder().encode("one") }));
+      ws.send(encodeFrame({ type: "response-body", requestId: frame.requestId, body: new TextEncoder().encode("two") }));
+      ws.send(encodeFrame({ type: "response-end", requestId: frame.requestId }));
+    } else {
+      send(ws, frame.requestId, 200, "application/json", payload || "ok");
+    }
+  });
+  ws.send(JSON.stringify({ v: 1, type: "open", code }));
+  const ready = JSON.parse(String(await onceMessage(ws)));
+  expect(ready.type).toBe("ready");
+  return ws;
+}
+
+function send(ws: WebSocket, requestId: number, status: number, contentType: string, body: string): void {
+  ws.send(encodeFrame({ type: "response-start", requestId, status, headers: [["content-type", contentType]] }));
+  if (body) ws.send(encodeFrame({ type: "response-body", requestId, body: new TextEncoder().encode(body) }));
+  ws.send(encodeFrame({ type: "response-end", requestId }));
+}
+
+function onceMessage(ws: WebSocket): Promise<WebSocket.RawData> {
+  return new Promise((resolve, reject) => {
+    ws.once("message", (data) => resolve(data));
+    ws.once("error", reject);
+    ws.once("close", () => reject(new Error("closed")));
+  });
+}
+
+function concat(parts: Uint8Array[]): Uint8Array {
+  const length = parts.reduce((sum, part) => sum + part.byteLength, 0);
+  const out = new Uint8Array(length);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.byteLength;
+  }
+  return out;
+}

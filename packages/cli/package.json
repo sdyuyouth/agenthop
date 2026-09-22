@@ -1,0 +1,31 @@
+{
+  "name": "@agenthop/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "agenthop": "./src/bin.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@a2a-js/sdk": "^1.1.0",
+    "@agenthop/agent": "workspace:*",
+    "@agenthop/relay-node": "workspace:*",
+    "@agenthop/tunnel": "workspace:*",
+    "express": "^5.1.0",
+    "tsx": "^4.20.5",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.5.2",
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}

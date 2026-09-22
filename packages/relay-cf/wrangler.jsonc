@@ -1,0 +1,17 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "agenthop-relay",
+  "account_id": "e392ede42e8ac4493aa6753865856dd6",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-12-10",
+  "observability": { "enabled": false },
+  "durable_objects": {
+    "bindings": [
+      { "name": "ROOM", "class_name": "Room" },
+      { "name": "RATE_LIMIT", "class_name": "RateLimit" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Room", "RateLimit"] }
+  ]
+}
