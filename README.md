@@ -45,7 +45,7 @@ agenthop send 4821-amber-river-maple "接口怎么定" --file ./draft.md
 
 ## Relay
 
-The default relay is `https://agenthop-relay.2629133574.workers.dev`. Override it with `--relay` or `AGENTHOP_RELAY`.
+The default relay is `https://agenthop.imatrix.tech`. Override it with `--relay` or `AGENTHOP_RELAY`.
 
 Self-host the same protocol:
 
@@ -61,7 +61,7 @@ Deploy the Workers relay from `packages/relay-cf`:
 pnpm --filter @agenthop/relay-cf exec wrangler deploy
 ```
 
-Set `AGENTHOP_RELAY` to the `workers.dev` URL it prints. Optional relay password:
+Set `AGENTHOP_RELAY` to the deployed URL. Optional relay password:
 
 ```bash
 pnpm --filter @agenthop/relay-cf exec wrangler secret put RELAY_PASS

@@ -12,7 +12,7 @@ import { WebSocket } from "ws";
 import { HostBridge } from "./bridge.js";
 import { Desk, listenControl, type ListedQuestion } from "./desk.js";
 
-export const DEFAULT_RELAY = "https://agenthop-relay.2629133574.workers.dev";
+export const DEFAULT_RELAY = "https://agenthop.imatrix.tech";
 
 export type HostOptions = {
   relay?: string;
