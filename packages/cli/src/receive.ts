@@ -33,6 +33,23 @@ export async function replyOnHost(room: Room, event: SessionEvent, text: string)
   await room.local({ id, text, files: [], kind: "say" });
 }
 
+/** Start the agent with one session-log line. Empty output or a non-zero exit means it chose not to reply. */
+export function runAgent(command: string, line: string): string | undefined {
+  const result = spawnSync(command, {
+    input: line.endsWith("\n") ? line : `${line}\n`,
+    encoding: "utf8",
+    shell: true,
+    env: process.env,
+  });
+  if (result.error || result.status !== 0) {
+    const detail = (result.stderr || result.error?.message || "").trim();
+    console.error(`agent exited ${result.status ?? "signal"}${detail ? `: ${detail}` : ""}`);
+    return undefined;
+  }
+  const output = result.stdout ?? "";
+  return output.endsWith("\r\n") ? output.slice(0, -2) : output.endsWith("\n") ? output.slice(0, -1) : output;
+}
+
 function commandOutput(command: string, event: SessionEvent): string | undefined {
   const payload = JSON.stringify({
     at: event.at,

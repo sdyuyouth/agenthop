@@ -6,7 +6,7 @@ import { ClientFactory } from "@a2a-js/sdk/client";
 import { filesFromPaths, messageFromParts, partsFromMessage, safeName, type HopFile } from "@agenthop/agent";
 import { normalizeCode, relayEndpoints } from "@agenthop/tunnel";
 import { DEFAULT_RELAY, readHostFile } from "./host.js";
-import { autoReply, isInbound } from "./receive.js";
+import { autoReply } from "./receive.js";
 import { type Ack } from "./room.js";
 import { type SessionEvent } from "./talk.js";
 
@@ -47,35 +47,51 @@ export async function followRoom(options: {
   pass?: string;
   onReceive?: string;
   signal?: AbortSignal;
+  onReady?: () => void;
   onEvent: (event: SessionEvent) => void;
 }): Promise<void> {
   const relay = options.relay ?? process.env.AGENTHOP_RELAY ?? DEFAULT_RELAY;
   const code = normalizeCode(options.code);
   const { publicBase } = relayEndpoints(relay, code);
   let after = 0;
+  let synced = false;
   let replies = Promise.resolve();
+  const sent = new Set<string>();
+  const handled = new Set<string>();
   for (;;) {
     if (options.signal?.aborted) return;
     const body = await readQueue(publicBase, after, options.pass);
+    const fresh: SessionEvent[] = [];
     for (const event of body.events) {
       options.onEvent(event);
       after = event.seq;
-      if (!options.onReceive || !isInbound(event, "join")) continue;
-      const command = options.onReceive;
-      replies = replies.then(() =>
-        autoReply(command, event, async (text) => {
-          await sendMessage({
-            code,
-            text,
-            relay,
-            pass: options.pass,
-            kind: event.event === "current" ? "result" : "say",
-            answerId: event.event === "current" ? event.id : undefined,
-          });
-        }),
-      );
+      fresh.push(event);
+    }
+    if (!synced) {
+      synced = true;
+      options.onReady?.();
+    } else if (options.onReceive) {
+      for (const event of fresh) scheduleReceive(options.onReceive, event);
     }
     await delay(300);
+  }
+
+  function scheduleReceive(command: string, event: SessionEvent): void {
+    if (event.event === "queued" || sent.has(event.id) || handled.has(event.id)) return;
+    handled.add(event.id);
+    replies = replies.then(() =>
+      autoReply(command, event, async (text) => {
+        const result = await sendMessage({
+          code,
+          text,
+          relay,
+          pass: options.pass,
+          kind: event.event === "current" ? "result" : "say",
+          answerId: event.event === "current" ? event.id : undefined,
+        });
+        sent.add(result.id);
+      }),
+    );
   }
 }
 

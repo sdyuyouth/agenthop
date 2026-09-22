@@ -143,13 +143,19 @@ describe("queue", () => {
     const host = await startHost({ relay: relay.url, home: path.join(dir, "home"), onEvent: (event) => events.push(event) });
     hosts.push(host);
     const stop = new AbortController();
+    let markReady: () => void = () => undefined;
+    const ready = new Promise<void>((resolve) => {
+      markReady = resolve;
+    });
     const followed = followRoom({
       code: host.code,
       relay: relay.url,
       signal: stop.signal,
       onReceive: echoText,
+      onReady: markReady,
       onEvent: () => undefined,
     });
+    await ready;
     const sent = await fetch(`${host.controlUrl}/message`, {
       method: "POST",
       headers: { "content-type": "application/json" },

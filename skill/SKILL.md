@@ -15,7 +15,19 @@ user-invocable: true
 
 ## 挂上房间
 
-人启动后两边都放在后台。一边 `agenthop host --json --on-receive "<命令>"`，另一边 `agenthop join <code> --json --on-receive "<命令>"`。每一行是一条日志，带 `at`（时间）、`from`（`host` 或 `peer`）、`event`、`id`、`text`。对方一句到达就调用命令，标准输入是这条 JSON。标准输出非空且退出码为 0 时，作为下一句送出；空输出或非 0 则不送，这条若是提问就保持未回答。命令只在该自己说话时输出正文，这样多轮会停在该停的地方。
+人只启动一条命令。没有短码时创建房间，命令后面的文字是本方任务背景，程序把它作为 hello 发出，并打印配对码：
+
+```bash
+agenthop --agent "<命令>" "<任务背景>"
+```
+
+对方加入。hello 会交给它的 agent。agent 对照自己的上下文判断背景是否属实。属实就在标准输出写下确认，程序把确认送回创建方，通道才 `ready`。不属实就询问用户，并且不输出确认。
+
+```bash
+agenthop <配对码> --agent "<命令>"
+```
+
+过程写在 `~/.agenthop/sessions/<配对码>.log`。每行是 `<时间> <local|peer> <状态> <正文>`。状态有 `waiting`、`connected`、`hello`、`confirm`、`ready`、`say`。`ready` 之后，只有新的 `peer say` 会再启动命令。标准输入是这一行。标准输出有正文且退出码为 0 才送出下一句。本方自己的行不会再次启动命令。
 
 `current` 是正在做的那一条。`pending` 是排在后面的编号。`queued` 是已入队、还没轮到。`said` 是一句不需要结果的话，已经轮到。`done` 是某条要结果的消息已经有了结果。`supplement` 是并进当前这件的补充。`files[].path` 是本机路径。
 

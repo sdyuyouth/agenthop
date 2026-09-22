@@ -5,15 +5,26 @@ import { installAgenthop } from "./install.js";
 import { updateAgenthop } from "./update.js";
 import { DEFAULT_RELAY, readHostFile, startHost } from "./host.js";
 import { followRoom, readQueue, sendMessage, type SendKind } from "./send.js";
+import { runSession } from "./session.js";
 import { type SessionEvent } from "./talk.js";
 
-const [command, ...rest] = process.argv.slice(2);
-const parsed = parseArgs(rest);
+const parsed = parseArgs(process.argv.slice(2));
 const flags = parsed.flags;
 const positionals = parsed.positionals;
+const command = positionals[0] ?? "";
+const words = positionals.slice(1);
 
 try {
-  if (command === "host") {
+  if (flags.agent) {
+    const code = command && isValidCode(command) ? command : undefined;
+    await runSession({
+      code,
+      hello: code ? words.join(" ") : positionals.join(" "),
+      agent: flags.agent,
+      relay: flags.relay,
+      pass: flags.pass,
+    });
+  } else if (command === "host") {
     const running = await startHost({
       relay: flags.relay,
       pass: flags.pass,
@@ -29,9 +40,9 @@ try {
     process.on("SIGINT", () => {
       void running.close().then(() => process.exit(0));
     });
-  } else if (command === "join") {
-    const code = positionals[0];
-    if (!code) throw new Error("usage: agenthop join <code>");
+  } else if (command === "join" || command === "watch") {
+    const code = words[0];
+    if (!code) throw new Error("usage: agenthop watch <code> [--on-receive CMD]");
     process.on("SIGINT", () => process.exit(0));
     await followRoom({
       code,
@@ -41,7 +52,7 @@ try {
       onEvent: (event) => printEvent(event, flags.json),
     });
   } else if (command === "queue" || command === "inbox") {
-    const code = positionals[0];
+    const code = words[0];
     if (code) {
       const relay = flags.relay ?? process.env.AGENTHOP_RELAY ?? DEFAULT_RELAY;
       console.log(JSON.stringify(await readQueue(relayEndpoints(relay, normalizeCode(code)).publicBase, 0, flags.pass)));
@@ -53,7 +64,7 @@ try {
     }
   } else if (command === "reply" || command === "send") {
     const kind = kindOf(flags, command);
-    const parsedSend = splitSend(positionals, command);
+    const parsedSend = splitSend(words, command);
     if (!parsedSend.text && flags.files.length === 0) throw new Error(sendUsage());
     const result = await sendMessage({
       code: parsedSend.code,
@@ -63,7 +74,7 @@ try {
       pass: flags.pass,
       outDir: flags.out,
       kind,
-      answerId: command === "reply" ? positionals[0] : flags.answer,
+      answerId: command === "reply" ? words[0] : flags.answer,
     });
     if (flags.json || result.event !== "done") {
       console.log(JSON.stringify(result));
@@ -87,12 +98,10 @@ try {
       void running.close().then(() => process.exit(0));
     });
   } else {
-    console.log("usage: agenthop install [--skill-dir DIR]");
+    console.log("usage: agenthop --agent <command> <背景>");
+    console.log("       agenthop <code> --agent <command>");
+    console.log("       agenthop install [--skill-dir DIR]");
     console.log("       agenthop update [--check] [--force]");
-    console.log("       agenthop host [--json] [--relay URL] [--pass SECRET] [--on-receive CMD]");
-    console.log("       agenthop join <code> [--json] [--relay URL] [--on-receive CMD]");
-    console.log("       agenthop queue [code]");
-    console.log("       agenthop send [code] <text> [--ask] [--answer ID] [--supplement] [--file PATH] [--json]");
     console.log("       agenthop relay [--listen HOST:PORT] [--pass SECRET]");
     process.exit(command ? 1 : 0);
   }
@@ -152,6 +161,7 @@ type Flags = {
   ask: boolean;
   supplement: boolean;
   onReceive?: string;
+  agent?: string;
   check: boolean;
   force: boolean;
   json: boolean;
@@ -173,6 +183,7 @@ function parseArgs(args: string[]): { flags: Flags; positionals: string[] } {
     else if (arg === "--supplement") flags.supplement = true;
     else if (arg === "--answer") flags.answer = args[++i];
     else if (arg === "--on-receive") flags.onReceive = args[++i];
+    else if (arg === "--agent") flags.agent = args[++i];
     else if (arg === "--check") flags.check = true;
     else if (arg === "--force") flags.force = true;
     else if (arg === "--skill-dir") flags.skillDirs.push(args[++i] ?? "");

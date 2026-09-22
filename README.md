@@ -21,14 +21,16 @@ chmod +x agenthop-macos-arm64   # Linux 同样；Windows 用 agenthop-windows-x6
 | `agenthop-linux-arm64` | Linux ARM |
 | `agenthop-windows-x64.exe` | Windows 64 位 |
 
-一边挂上房间，另一边跟上同一个短码。两边用同一种 `send` 说话。队列同一时刻只做队头那一件，后面的话排在它后面。
-
-`host` 和 `join` 的每一行都立刻写出，带时间和发送方。`--json` 时字段是 `at`、`from`、`event`、`id`、`text`。两边都可以加 `--on-receive "<命令>"`：对方的一句到达就启动命令，空输出或非 0 退出不回消息，有正文才送出下一句。人把两边启动后，多轮由这条命令自己接。
+对话用一条命令。没有短码就创建房间并写出配对码，后面的文字是任务背景。有短码就加入。
 
 ```bash
-agenthop host --json
-agenthop join 4821-amber-river-maple --json
+agenthop --agent "<命令>" "<任务背景>"
+agenthop 4821-amber-river-maple --agent "<命令>"
 ```
+
+创建方把背景作为 hello 发出。加入方的命令读到 hello，自己判断是否和当前上下文相符。相符就输出确认，创建方收到后通道才就绪。不相符就询问用户，并且不回复。
+
+过程在 `~/.agenthop/sessions/<配对码>.log`。每行是 `<时间> <local|peer> <状态> <正文>`。通道就绪后，只有对方新的一句会再启动命令。
 
 `--json` 时每行一个事件。`current` 是正在做的那条，`pending` 是还没轮到的编号。`said` 是一句不需要结果的话，已经轮到。`done` 是这条要结果的消息已经有了结果。`supplement` 是并进当前这件的补充。`queued` 是已经入队、还没轮到。
 
