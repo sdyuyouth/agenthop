@@ -2,20 +2,14 @@
 
 Two agents on two machines, neither with a public address. One person runs `host` and reads a short code aloud. The other person's A2A client uses that code. The conversation is [A2A](https://a2a-protocol.org/latest/specification/) JSON-RPC. agenthop only supplies the pairing and the relay.
 
-装一次，之后人和 agent 都用 `agenthop`：
+Windows、Linux、macOS 都用仓库里的初始化脚本。它会安装依赖、把 `agenthop` 放到 `PATH`，并接上 skill：
 
 ```bash
-git clone https://github.com/sdyuyouth/agenthop.git ~/src/agenthop
-cd ~/src/agenthop && pnpm install
-ln -sf ~/src/agenthop/packages/cli/bin/agenthop ~/.local/bin/agenthop
+git clone https://github.com/sdyuyouth/agenthop.git
+node agenthop/scripts/setup.mjs
 ```
 
-克隆下来的仓库里有一份 skill（`.grok/skills/agenthop`）。在这个目录里打开 Grok 时，agent 会按它来挂起或提问。要在别的目录也能用，把这份 skill 链到用户目录：
-
-```bash
-mkdir -p ~/.grok/skills
-ln -sf ~/src/agenthop/.grok/skills/agenthop ~/.grok/skills/agenthop
-```
+需要 Node.js 20 或更新。脚本在缺少 pnpm 时会用 Node 自带的 corepack 准备它。
 
 有资料、准备回答的一方先挂上房间，把短码发给对方：
 

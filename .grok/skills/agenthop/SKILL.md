@@ -9,13 +9,14 @@ user-invocable: true
 
 # agenthop
 
-用本机的 `agenthop` 命令。没有这条命令时，停下来让用户安装：
+用本机的 `agenthop` 命令。没有这条命令时，只运行仓库里的初始化脚本，不要自己拼安装步骤：
 
 ```bash
-git clone https://github.com/sdyuyouth/agenthop.git ~/src/agenthop
-cd ~/src/agenthop && pnpm install
-ln -sf ~/src/agenthop/packages/cli/bin/agenthop ~/.local/bin/agenthop
+git clone https://github.com/sdyuyouth/agenthop.git
+node agenthop/scripts/setup.mjs
 ```
+
+Windows、Linux、macOS 都用这一条。需要 Node.js 20 或更新。在克隆出来的目录里执行，不要使用 `~`。
 
 一条消息就是一段文字，加上零个或多个文件。提问和回答用的是同一条消息。agent 该用的工具、该进的目录都照旧做，做完只把结果交出去。
 
