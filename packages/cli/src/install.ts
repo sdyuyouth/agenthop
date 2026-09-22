@@ -11,17 +11,36 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, platform } from "node:os";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, parse, resolve } from "node:path";
 import { skillMarkdown } from "./skill-text.js";
 
 const windows = platform() === "win32";
 
+export type InstallOptions = {
+  /** Directories that should contain SKILL.md. The caller names its own skill folder. */
+  skillDirs?: string[];
+};
+
 /** Copy this program onto PATH and write the skill. No repository and no package install. */
-export function installAgenthop(): void {
+export function installAgenthop(options: InstallOptions = {}): void {
   const command = installCommand();
-  const skills = installSkills();
+  const skills = writeSkillFiles(options.skillDirs ?? []);
   console.log(command);
   for (const skill of skills) console.log(skill);
+}
+
+/** Write SKILL.md under the home directory and into each directory the caller provides. */
+export function writeSkillFiles(skillDirs: string[], home = homedir()): string[] {
+  const files = [join(home, ".agenthop", "SKILL.md")];
+  for (const dir of skillDirs) {
+    if (!dir.trim()) throw new Error("usage: agenthop install [--skill-dir DIR]");
+    files.push(join(resolve(dir), "SKILL.md"));
+  }
+  for (const file of files) {
+    ensureDir(dirname(file));
+    writeFileSync(file, skillMarkdown);
+  }
+  return files;
 }
 
 function installCommand(): string {
@@ -29,7 +48,7 @@ function installCommand(): string {
   const dev = isNodeBinary(source);
   if (windows) {
     const destDir = join(process.env.LOCALAPPDATA || join(homedir(), "AppData", "Local"), "agenthop");
-    mkdirSync(destDir, { recursive: true });
+    ensureDir(destDir);
     const dest = join(destDir, "agenthop.exe");
     if (!dev) copyFileSync(source, dest);
     else writeFileSync(join(destDir, "agenthop.cmd"), `@echo off\r\nnode "${source}" %*\r\n`);
@@ -37,7 +56,7 @@ function installCommand(): string {
     return dev ? join(destDir, "agenthop.cmd") : dest;
   }
   const destDir = join(homedir(), ".local", "bin");
-  mkdirSync(destDir, { recursive: true });
+  ensureDir(destDir);
   const dest = join(destDir, "agenthop");
   if (dev) {
     if (!sameFile(dest, source)) {
@@ -52,15 +71,19 @@ function installCommand(): string {
   return dest;
 }
 
-function installSkills(): string[] {
-  const written: string[] = [];
-  for (const folder of [".grok/skills", ".claude/skills", ".codex/skills", ".cursor/skills"]) {
-    const dir = join(homedir(), folder, "agenthop");
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "SKILL.md"), skillMarkdown);
-    written.push(dir);
+function ensureDir(dir: string): void {
+  const absolute = resolve(dir);
+  const { root } = parse(absolute);
+  let current = root;
+  for (const part of absolute.slice(root.length).split(/[\\/]/).filter(Boolean)) {
+    current = join(current, part);
+    try {
+      mkdirSync(current);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "EEXIST") throw error;
+    }
   }
-  return written;
 }
 
 function isNodeBinary(file: string): boolean {

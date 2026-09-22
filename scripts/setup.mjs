@@ -19,7 +19,8 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const launcher = join(root, "packages", "cli", "bin", "agenthop.mjs");
-const skill = join(root, ".grok", "skills", "agenthop");
+const skillFile = join(root, "skill", "SKILL.md");
+const skillDirs = readSkillDirs(process.argv.slice(2));
 const windows = platform() === "win32";
 const installed = [];
 
@@ -68,11 +69,37 @@ function installCommand() {
 }
 
 function installSkills() {
-  for (const folder of [".grok/skills", ".claude/skills", ".codex/skills", ".cursor/skills"]) {
-    const dir = join(homedir(), folder);
-    mkdirSync(dir, { recursive: true });
-    linkDir(skill, join(dir, "agenthop"));
-    installed.push(`skill ${join(dir, "agenthop")}`);
+  const files = [join(homedir(), ".agenthop", "SKILL.md")];
+  for (const dir of skillDirs) files.push(join(resolve(dir), "SKILL.md"));
+  for (const file of files) {
+    placeSkill(file);
+    installed.push(`skill ${file}`);
+  }
+}
+
+function readSkillDirs(args) {
+  const dirs = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] !== "--skill-dir") {
+      console.error("usage: node scripts/setup.mjs [--skill-dir DIR]");
+      process.exit(1);
+    }
+    const dir = args[++i];
+    if (!dir) {
+      console.error("usage: node scripts/setup.mjs [--skill-dir DIR]");
+      process.exit(1);
+    }
+    dirs.push(dir);
+  }
+  return dirs;
+}
+
+function placeSkill(file) {
+  mkdirSync(dirname(file), { recursive: true });
+  try {
+    linkFile(skillFile, file);
+  } catch {
+    writeFileSync(file, readFileSync(skillFile));
   }
 }
 
@@ -123,12 +150,6 @@ function linkFile(target, link) {
   if (sameLink(link, target)) return;
   removeExisting(link);
   symlinkSync(target, link);
-}
-
-function linkDir(target, link) {
-  if (sameLink(link, target)) return;
-  removeExisting(link);
-  symlinkSync(target, link, windows ? "junction" : "dir");
 }
 
 function removeExisting(link) {

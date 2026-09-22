@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const skill = readFileSync(join(root, ".grok/skills/agenthop/SKILL.md"), "utf8");
+const skill = readFileSync(join(root, "skill/SKILL.md"), "utf8");
 writeFileSync(join(root, "packages/cli/src/skill-text.ts"), `export const skillMarkdown = ${JSON.stringify(skill)};\n`);
 
 const targets = [

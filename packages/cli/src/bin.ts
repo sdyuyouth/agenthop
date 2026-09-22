@@ -55,7 +55,7 @@ try {
       for (const file of result.files) console.error(`file ${file.path}`);
     }
   } else if (command === "install") {
-    installAgenthop();
+    installAgenthop({ skillDirs: flags.skillDirs });
   } else if (command === "relay") {
     const [host, portText] = (flags.listen ?? "127.0.0.1:8787").split(":");
     const running = await startRelay({
@@ -68,7 +68,7 @@ try {
       void running.close().then(() => process.exit(0));
     });
   } else {
-    console.log("usage: agenthop install");
+    console.log("usage: agenthop install [--skill-dir DIR]");
     console.log("       agenthop host [--json] [--relay URL] [--pass SECRET]");
     console.log("       agenthop inbox");
     console.log("       agenthop reply <id> <text> [--file PATH]");
@@ -88,11 +88,12 @@ type Flags = {
   text?: string;
   out?: string;
   files: string[];
+  skillDirs: string[];
   json: boolean;
 };
 
 function parseArgs(args: string[]): { flags: Flags; positionals: string[] } {
-  const flags: Flags = { files: [], json: false };
+  const flags: Flags = { files: [], skillDirs: [], json: false };
   const positionals: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -103,6 +104,7 @@ function parseArgs(args: string[]): { flags: Flags; positionals: string[] } {
     else if (arg === "--text") flags.text = args[++i];
     else if (arg === "--out") flags.out = args[++i];
     else if (arg === "--file") flags.files.push(args[++i] ?? "");
+    else if (arg === "--skill-dir") flags.skillDirs.push(args[++i] ?? "");
     else positionals.push(arg ?? "");
   }
   return { flags, positionals };

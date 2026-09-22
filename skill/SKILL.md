@@ -9,7 +9,7 @@ user-invocable: true
 
 # agenthop
 
-用本机的 `agenthop` 命令。没有这条命令时，从 https://github.com/sdyuyouth/agenthop/releases/latest 下载与本机系统匹配的可执行文件，在它所在目录执行 `agenthop install`（Windows 文件是 `agenthop.exe install`）。不要克隆仓库。
+用本机的 `agenthop` 命令。没有这条命令时，从 https://github.com/sdyuyouth/agenthop/releases/latest 下载与本机系统匹配的可执行文件，执行 `agenthop install --skill-dir <本 agent 存放 SKILL.md 的目录>`。Windows 上下载的文件名是 `agenthop-windows-x64.exe`。
 
 一条消息就是一段文字，加上零个或多个文件。提问和回答用的是同一条消息。agent 该用的工具、该进的目录都照旧做，做完只把结果交出去。
 
