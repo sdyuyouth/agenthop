@@ -7,6 +7,7 @@ import { filesFromPaths, partsFromMessage, safeName, type HopMessage, type Incom
 
 export type ListedFile = { name: string; mediaType: string; path: string };
 export type ListedQuestion = { id: string; text: string; files: ListedFile[] };
+export type HostEvent = { event: "received" | "sent"; id: string; text: string; files: ListedFile[] };
 
 const callContext = new ServerCallContext();
 
@@ -17,6 +18,7 @@ export class Desk {
   constructor(
     private readonly store: TaskStore,
     private readonly inboxDir: string,
+    private readonly onEvent?: (event: HostEvent) => void,
   ) {}
 
   async accept(incoming: Incoming): Promise<void> {
@@ -29,10 +31,12 @@ export class Desk {
       await writeFile(filePath, file.bytes);
       files.push({ name, mediaType: file.mediaType, path: filePath });
     }
-    this.questions.push({ id: incoming.id, text: incoming.message.text, files });
+    const question = { id: incoming.id, text: incoming.message.text, files };
+    this.questions.push(question);
+    this.onEvent?.({ event: "received", ...question });
   }
 
-  async reply(id: string, message: HopMessage): Promise<void> {
+  async reply(id: string, message: HopMessage, files: ListedFile[] = []): Promise<void> {
     const task = await this.store.load(id, callContext);
     if (!task) throw new Error(`unknown question ${id}`);
     const parts = partsFromMessage(message);
@@ -56,6 +60,7 @@ export class Desk {
     await this.store.save(next, callContext);
     const index = this.questions.findIndex((item) => item.id === id);
     if (index >= 0) this.questions.splice(index, 1);
+    this.onEvent?.({ event: "sent", id, text: message.text, files });
   }
 }
 
@@ -70,7 +75,14 @@ export async function listenControl(desk: Desk): Promise<{ url: string; close: (
       if (request.method === "POST" && request.url === "/reply") {
         const body = JSON.parse(await readBody(request)) as { id?: string; text?: string; files?: string[] };
         if (!body.id) throw new Error("id is required");
-        await desk.reply(body.id, { text: body.text ?? "", files: await filesFromPaths(body.files ?? []) });
+        const paths = body.files ?? [];
+        const loaded = await filesFromPaths(paths);
+        const files = loaded.map((file, index) => ({
+          name: file.name,
+          mediaType: file.mediaType,
+          path: path.resolve(paths[index] ?? file.name),
+        }));
+        await desk.reply(body.id, { text: body.text ?? "", files: loaded }, files);
         response.writeHead(204);
         response.end();
         return;

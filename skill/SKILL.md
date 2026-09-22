@@ -15,25 +15,19 @@ user-invocable: true
 
 ## 等对方来问
 
-1. 后台启动，读标准输出第一行 JSON 里的 `code`：
+后台启动。标准输出每行一个 JSON。第一行是 `{ "code", "url" }`，把 `code` 告诉用户。进程保持运行，之后的每一行都是一条消息。
 
 ```bash
 agenthop host --json
 ```
 
-2. 把短码告诉用户，让用户转发给对方。进程保持运行。
-3. 需要看有没有新问题时：
-
-```bash
-agenthop inbox
-```
-
-返回 JSON 数组。每一项有 `id`、`text`，以及 `files`（本机路径）。用平时的工具读这些文件、完成工作。
-4. 把结果交回去。文字和文件都可有可无，至少要有一样：
+`event` 为 `received` 是收到的问题，为 `sent` 是交出去的结果。两者都有 `id`、`text`、`files`。`files[].path` 是本机路径。看到 `received` 后用平时的工具做完工作，把结果交回去。文字和文件都可有可无，至少要有一样：
 
 ```bash
 agenthop reply <id> "<结果>" --file <要附上的文件>
 ```
+
+这条命令成功后，host 会再输出一行 `sent`。
 
 ## 去问对方
 

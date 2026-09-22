@@ -10,7 +10,7 @@ import { decodeControl, generateCode, relayEndpoints } from "@agenthop/tunnel";
 import express from "express";
 import { WebSocket } from "ws";
 import { HostBridge } from "./bridge.js";
-import { Desk, listenControl, type ListedQuestion } from "./desk.js";
+import { Desk, listenControl, type HostEvent, type ListedQuestion } from "./desk.js";
 
 export const DEFAULT_RELAY = "https://agenthop.imatrix.tech";
 
@@ -19,6 +19,7 @@ export type HostOptions = {
   pass?: string;
   code?: string;
   home?: string;
+  onEvent?: (event: HostEvent) => void;
 };
 
 export type RunningHost = {
@@ -44,7 +45,7 @@ export async function startHost(options: HostOptions = {}): Promise<RunningHost>
   const home = options.home ?? path.join(homedir(), ".agenthop");
   const { publicBase, hostUrl } = relayEndpoints(relay, code);
   const store = new InMemoryTaskStore();
-  const desk = new Desk(store, path.join(home, "inbox"));
+  const desk = new Desk(store, path.join(home, "inbox"), options.onEvent);
   const control = await listenControl(desk);
   const app = express();
   const localUrl = await listen(app);

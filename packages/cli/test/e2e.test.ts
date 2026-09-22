@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { startRelay, type RunningRelay } from "@agenthop/relay-node";
 import { sendMessage } from "../src/send.js";
+import { type HostEvent } from "../src/desk.js";
 import { startHost, type RunningHost } from "../src/host.js";
 
 const relays: RunningRelay[] = [];
@@ -24,7 +25,8 @@ describe("question and result", () => {
     await writeFile(answered, "from the answerer");
     const relay = await startRelay();
     relays.push(relay);
-    const host = await startHost({ relay: relay.url, home });
+    const events: HostEvent[] = [];
+    const host = await startHost({ relay: relay.url, home, onEvent: (event) => events.push(event) });
     hosts.push(host);
 
     const pending = sendMessage({
@@ -39,6 +41,9 @@ describe("question and result", () => {
     const question = await waitForQuestion(host);
     expect(question.text).toBe("what did you decide");
     expect(await readFile(question.files[0]!.path, "utf8")).toBe("from the asker");
+    expect(events).toEqual([
+      { event: "received", id: question.id, text: "what did you decide", files: question.files },
+    ]);
 
     const reply = await fetch(`${host.controlUrl}/reply`, {
       method: "POST",
@@ -50,6 +55,8 @@ describe("question and result", () => {
     const result = await pending;
     expect(result.text).toBe("keep JSON-RPC");
     expect(await readFile(result.files[0]!.path, "utf8")).toBe("from the answerer");
+    expect(events[1]).toMatchObject({ event: "sent", id: question.id, text: "keep JSON-RPC" });
+    expect(events[1]!.files[0]!.path).toBe(answered);
     expect((await fetch(`${host.controlUrl}/inbox`)).status).toBe(200);
     expect(await (await fetch(`${host.controlUrl}/inbox`)).json()).toEqual([]);
   });

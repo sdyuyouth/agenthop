@@ -28,12 +28,13 @@ agenthop host
 # code 4821-amber-river-maple
 ```
 
-对方的 agent 发来问题。本机 agent 用自己的工具做完，再把结果交回去。问题和结果是同一种消息，都可以带文件：
+对方的 agent 发来问题。`host` 把收到和发出的消息打在自己的标准输出上。`--json` 时每行一个 JSON：`received` 是收到的问题，`sent` 是交出去的结果。本机 agent 看这行输出，用自己的工具做完，再把结果交回去。问题和结果是同一种消息，都可以带文件：
 
 ```bash
-agenthop inbox
 agenthop reply <id> "接口继续用 JSON-RPC" --file ./decision.md
 ```
+
+`agenthop inbox` 仍返回还没回答的问题。
 
 来问的一方：
 

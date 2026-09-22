@@ -1,6 +1,7 @@
 import { startRelay } from "@agenthop/relay-node";
 import { installAgenthop } from "./install.js";
 import { sendMessage } from "./send.js";
+import { type HostEvent } from "./desk.js";
 import { readHostFile, startHost } from "./host.js";
 
 const [command, ...rest] = process.argv.slice(2);
@@ -10,7 +11,11 @@ const positionals = parsed.positionals;
 
 try {
   if (command === "host") {
-    const running = await startHost({ relay: flags.relay, pass: flags.pass });
+    const running = await startHost({
+      relay: flags.relay,
+      pass: flags.pass,
+      onEvent: (event) => printEvent(event, flags.json),
+    });
     if (flags.json) {
       console.log(JSON.stringify({ code: running.code, url: running.url }));
     } else {
@@ -79,6 +84,16 @@ try {
 } catch (error) {
   console.error(error instanceof Error ? error.message : error);
   process.exit(1);
+}
+
+function printEvent(event: HostEvent, json: boolean): void {
+  if (json) {
+    console.log(JSON.stringify(event));
+    return;
+  }
+  console.log(`${event.event} ${event.id}`);
+  if (event.text) console.log(event.text);
+  for (const file of event.files) console.log(`file ${file.path}`);
 }
 
 type Flags = {
