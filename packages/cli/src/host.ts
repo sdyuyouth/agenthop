@@ -80,7 +80,13 @@ export async function startHost(options: HostOptions = {}): Promise<RunningHost>
   });
 
   /** Open the room. The code stays the same, so reopening it puts the conversation back. */
-  async function openRoom(): Promise<{ ws: WebSocket; url: string }> {
+  function openRoom(): Promise<{ ws: WebSocket; url: string }> {
+    // One deadline over the whole thing: a relay that takes the connection and then goes quiet,
+    // at any step, must not leave the command sitting there with nothing on screen.
+    return withDeadline(connectRoom(), HANDSHAKE_MS, `中继 ${relay} 没有把房间开起来，${HANDSHAKE_MS / 1000} 秒后放弃`);
+  }
+
+  async function connectRoom(): Promise<{ ws: WebSocket; url: string }> {
     const ws = new WebSocket(hostUrl, {
       headers: options.pass ? { authorization: `Bearer ${options.pass}` } : undefined,
     });
@@ -102,12 +108,7 @@ export async function startHost(options: HostOptions = {}): Promise<RunningHost>
         });
       });
       ws.send(JSON.stringify({ v: 1, type: "open", code }));
-      const opened = await Promise.race([
-        ready,
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`中继 ${relay} 收下了连接但没有回应，${HANDSHAKE_MS / 1000} 秒后放弃`)), HANDSHAKE_MS).unref(),
-        ),
-      ]);
+      const opened = await ready;
       ws.on("message", (data, isBinary) => {
         if (!isBinary) return;
         bridge.onFrame(new Uint8Array(data as Buffer));
@@ -163,6 +164,17 @@ export async function startHost(options: HostOptions = {}): Promise<RunningHost>
       await new Promise<void>((resolve, reject) => localUrl.server.close((error) => (error ? reject(error) : resolve())));
     },
   };
+}
+
+function withDeadline<T>(work: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: NodeJS.Timeout;
+  return Promise.race([
+    work,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), ms);
+      timer.unref();
+    }),
+  ]).finally(() => clearTimeout(timer)) as Promise<T>;
 }
 
 function delay(ms: number): Promise<void> {
