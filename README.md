@@ -27,7 +27,7 @@ chmod +x agenthop-macos-arm64
 
 Intel 把文件名换成 `agenthop-macos-x64`。命令装到 `~/.local/bin/agenthop`。新开一个终端后可以直接运行 `agenthop`。
 
-会话日志在 `~/.agenthop/sessions/<配对码>.log`。技能副本在 `~/.agenthop/SKILL.md`。
+会话日志在 `~/.agenthop/sessions/<配对码>.<create|join>.log`。技能副本在 `~/.agenthop/SKILL.md`。
 
 ## Linux
 
@@ -40,7 +40,7 @@ chmod +x agenthop-linux-x64
 
 ARM64 把文件名换成 `agenthop-linux-arm64`。命令装到 `~/.local/bin/agenthop`。新开一个终端后可以直接运行 `agenthop`。
 
-会话日志在 `~/.agenthop/sessions/<配对码>.log`。技能副本在 `~/.agenthop/SKILL.md`。
+会话日志在 `~/.agenthop/sessions/<配对码>.<create|join>.log`。技能副本在 `~/.agenthop/SKILL.md`。
 
 ## Windows
 
@@ -52,7 +52,7 @@ ARM64 把文件名换成 `agenthop-linux-arm64`。命令装到 `~/.local/bin/age
 
 命令装到 `%LOCALAPPDATA%\agenthop\agenthop.exe`，并把这个目录写入用户 PATH。新开一个终端后可以直接运行 `agenthop`。
 
-会话日志在 `%USERPROFILE%\.agenthop\sessions\<配对码>.log`。技能副本在 `%USERPROFILE%\.agenthop\SKILL.md`。
+会话日志在 `%USERPROFILE%\.agenthop\sessions\<配对码>.<create|join>.log`。技能副本在 `%USERPROFILE%\.agenthop\SKILL.md`。
 
 ## 安装选项
 
@@ -102,7 +102,9 @@ agenthop <配对码>
 
 `peer refused` 表示这一句既没有进入对话，也没有落到磁盘：可能是第三个人拿着同一个配对码，也可能是这次会话的用量到了上限（总量 8 MiB、2000 条、单条正文 64 KiB）。对方带附件时写 `peer files`，**默认只记名字不保存**，要保存加 `--accept-files`。中继那边对同一个房间的写入也限到每分钟 60 条，读取不计。
 
-标准输出就是对话过程，要出现在用户看得到的地方。另存一份可以，但要同时告诉用户文件的绝对路径和查看命令：macOS 与 Linux 用 `tail -f ~/.agenthop/sessions/<配对码>.log`，Windows PowerShell 用 `Get-Content -Wait -Tail 30 $env:USERPROFILE\.agenthop\sessions\<配对码>.log`。判断标准只有一个：用户此刻能不能看到对话在往前走。
+标准输出就是对话过程，要出现在用户看得到的地方。另存一份可以，但要同时告诉用户文件的绝对路径和查看命令：macOS 与 Linux 用 `tail -f <程序打印的那个路径>`，Windows PowerShell 用 `Get-Content -Wait -Tail 30 <程序打印的那个路径>`。判断标准只有一个：用户此刻能不能看到对话在往前走。
+
+启动后的第一行是日志的绝对路径（`local log <路径>`）。日志按房间和哪一端命名：创建方 `<配对码>.create.log`，加入方 `<配对码>.join.log`，两端在同一台机器上也不会写进同一个文件。
 
 日志每行的格式是：
 
@@ -110,7 +112,7 @@ agenthop <配对码>
 <时间> <local|peer> <状态> <正文>
 ```
 
-状态依次是 `waiting`、`connected`、`hello`、`confirm`、`ready`、`say`，结束时是 `bye`、`gone` 或 `expired`；中途还可能出现 `reconnecting`、`reconnected`、`undelivered`、`refused`、`files`、`input-closed`。时间是本机时间，带时区偏移。
+状态依次是 `log`、`waiting`、`connected`、`hello`、`confirm`、`ready`、`say`，结束时是 `bye`、`gone` 或 `expired`；中途还可能出现 `reconnecting`、`reconnected`、`undelivered`、`refused`、`files`、`input-closed`。时间是本机时间，带时区偏移。
 
 换中继：
 

@@ -66,7 +66,7 @@ async function createSession(options: SessionOptions, home: string): Promise<voi
   if (!hello) throw new Error("usage: agenthop <任务背景>");
   let lost = "";
   let peerId: string | undefined;
-  const logFile = () => sessionPath(home, host.code);
+  const logFile = () => sessionPath(home, host.code, "create");
   const host = await startHost({
     relay: options.relay,
     pass: options.pass,
@@ -92,6 +92,8 @@ async function createSession(options: SessionOptions, home: string): Promise<voi
     },
   });
   const log = logFile();
+  // The first line says where the rest of them are, so nobody has to work the path out.
+  write(log, "local", "log", log);
   write(log, "local", "waiting", host.code);
   const say = (wire: string) => sayLocal(host, wire);
   const out = outbox(options.lines!, log);
@@ -157,9 +159,10 @@ async function createSession(options: SessionOptions, home: string): Promise<voi
 
 async function joinSession(options: SessionOptions, home: string): Promise<void> {
   const code = options.code ?? "";
-  const log = sessionPath(home, code);
+  const log = sessionPath(home, code, "join");
   const id = randomUUID().slice(0, 8);
   const send = (text: string) => sendMessage({ code, text, relay: options.relay, pass: options.pass });
+  write(log, "local", "log", log);
   try {
     await send(connectWire(id));
   } catch (error) {
@@ -336,8 +339,14 @@ function joinFailure(error: unknown): string {
   return `加入房间失败。配对码可能打错了，或者房间已经过期（十分钟没有对话就会消失）。请对方重新执行 agenthop "<任务背景>" 拿一个新配对码。\n${detail}`;
 }
 
-export function sessionPath(home: string, code: string): string {
-  return path.join(home, "sessions", `${code}.log`);
+export type Seat = "create" | "join";
+
+/**
+ * A log is one end's view of one conversation, so both are in its name. On one machine the two
+ * sides share a home directory, and keying only by the code put them in the same file.
+ */
+export function sessionPath(home: string, code: string, seat: Seat): string {
+  return path.join(home, "sessions", `${code}.${seat}.log`);
 }
 
 export function write(file: string, side: "local" | "peer", state: string, text = ""): string {

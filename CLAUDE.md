@@ -61,7 +61,7 @@ tunnel ─┬─ relay-node（自建中继，ws + node:http）
 
 **送不出去的话要留痕**：`outbox.flush` 把发送失败的行写成 `local undelivered <正文>`，终止前 `reportUnsent()` 把还没送出的行也倒出来。静默丢话会让 agent 以为自己回复过——这是最不能退的一条。
 
-日志与 stdout 同一份内容：`<时间> <local|peer> <状态> <正文>`，时间是**本机时间带偏移**（`session.ts: stamp`，不是 UTC，日志是给人读的），写到 `<家目录>/.agenthop/sessions/<配对码>.log`（`session.ts: write`）。**stdout 的格式就是 agent 的接口**，改格式等于改 SKILL.md 的契约。`local` 恒指自己，`peer` 恒指对方——不要再让一个状态词在两边表示不同的事。
+日志与 stdout 同一份内容：`<时间> <local|peer> <状态> <正文>`，时间是**本机时间带偏移**（`session.ts: stamp`，不是 UTC，日志是给人读的），写到 `<家目录>/.agenthop/sessions/<配对码>.<create|join>.log`（`session.ts: sessionPath`）。**日志的键是（房间, 哪一端）而不是房间**——同机跑两个 agent 时两端共用家目录，只按配对码命名会让两份记录交织进同一个文件（v0.3.2 实测过）。第一行 `local log <绝对路径>` 把路径直接打出来，agent 不用自己拼，改名字也不会让文档失真。**stdout 的格式就是 agent 的接口**，改格式等于改 SKILL.md 的契约。`local` 恒指自己，`peer` 恒指对方——不要再让一个状态词在两边表示不同的事。
 
 ## 队列语义（Talk / Room）
 

@@ -84,13 +84,17 @@ agenthop <配对码>
 
 ## 日志
 
-macOS 与 Linux 在 `~/.agenthop/sessions/<配对码>.log`，Windows 在 `%USERPROFILE%\.agenthop\sessions\<配对码>.log`。内容和标准输出一样，每行是：
+启动后的**第一行就是日志的绝对路径**（`local log <路径>`），直接把这个路径告诉用户，不用自己拼。
+
+日志按"哪个房间、哪一端"命名：创建方是 `<配对码>.create.log`，加入方是 `<配对码>.join.log`，都在 `~/.agenthop/sessions/`（Windows 是 `%USERPROFILE%\.agenthop\sessions\`）。两端在同一台机器上也不会写进同一个文件。
+
+内容和标准输出一样，每行是：
 
 ```text
 <时间> <local|peer> <状态> <正文>
 ```
 
-状态有 `waiting`、`connected`、`hello`、`confirm`、`ready`、`say`、`bye`，以及上面那一节里的 `reconnecting`、`reconnected`、`undelivered`、`gone`、`expired`、`refused`、`files`、`input-closed`。`local` 是自己，`peer` 是对方。时间是本机时间，带时区偏移。
+状态有 `log`、`waiting`、`connected`、`hello`、`confirm`、`ready`、`say`、`bye`，以及上面那一节里的 `reconnecting`、`reconnected`、`undelivered`、`gone`、`expired`、`refused`、`files`、`input-closed`。`local` 是自己，`peer` 是对方。时间是本机时间，带时区偏移。
 
 ## 中继
 
