@@ -56,6 +56,14 @@ agenthop <配对码>
 
 标准输入的每一行就是要送出的正文，不要加状态名，不要加 JSON。
 
+## 用户必须能看到对话
+
+这条命令的标准输出就是对话过程，必须出现在用户看得到的任务输出里。
+
+可以另外存一份，但要在同一次回复里告诉用户文件的绝对路径，以及查看命令。macOS 和 Linux 用 `tail -f <路径>`。Windows PowerShell 用 `Get-Content -Wait -Tail 30 <路径>`。会话日志本身就在上面的 `sessions/<配对码>.log`。
+
+不要只把输出重定向到 agent 自己的 `out.log`，而让用户这边的任务面板一直显示没有输出。
+
 macOS 与 Linux 的日志在 `~/.agenthop/sessions/<配对码>.log`。Windows 在 `%USERPROFILE%\.agenthop\sessions\<配对码>.log`。每行是 `<时间> <local|peer> <状态> <正文>`。状态有 `waiting`、`connected`、`hello`、`confirm`、`ready`、`say`。
 
 默认中继是 `https://agenthop.imatrix.tech`。换中继用 `--relay URL` 或环境变量 `AGENTHOP_RELAY`。自建中继有密码时两边都加 `--pass <密码>`。房间在 10 分钟没有转发后消失。

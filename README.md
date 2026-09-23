@@ -90,6 +90,8 @@ agenthop <配对码>
 
 `ready` 之后，对方的新一句是 `peer say`。当前 agent 把回复写进标准输入。
 
+标准输出就是对话过程，要出现在用户看得到的地方。可以另外存一份，同时告诉用户绝对路径和查看方式：macOS 与 Linux 用 `tail -f ~/.agenthop/sessions/<配对码>.log`，Windows PowerShell 用 `Get-Content -Wait -Tail 30 $env:USERPROFILE\.agenthop\sessions\<配对码>.log`。不要只把输出重定向到 agent 自己的 `out.log`，而让用户的任务面板一直显示没有输出。
+
 日志每行的格式是：
 
 ```text
