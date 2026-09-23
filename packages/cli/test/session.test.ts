@@ -72,27 +72,61 @@ describe("session", () => {
     await Promise.allSettled([creator, joiner, relay.close()]);
   });
 
-  it("ends both sides when one of them says goodbye", async () => {
+  it("says goodbye back before either side goes", async () => {
+    for (const opener of ["creator", "joiner"] as const) {
+      const dir = await mkdtemp(path.join(tmpdir(), "agenthop-session-"));
+      const relay = await startRelay();
+      const creatorLines = lineQueue();
+      const joinerLines = lineQueue();
+      const creator = runSession({
+        hello: "背景",
+        lines: creatorLines,
+        relay: relay.url,
+        home: path.join(dir, "creator"),
+      });
+      const code = await waitForText(path.join(dir, "creator"), "waiting");
+      const joiner = runSession({ code, lines: joinerLines, relay: relay.url, home: path.join(dir, "joiner") });
+      await waitForText(path.join(dir, "joiner"), "peer hello");
+      joinerLines.push("确认");
+      await waitForText(path.join(dir, "creator"), "ready");
+
+      (opener === "creator" ? creatorLines : joinerLines).push("/bye");
+      await Promise.all([creator, joiner]);
+
+      for (const side of ["creator", "joiner"] as const) {
+        const log = await readFile(sessionPath(path.join(dir, side), code), "utf8");
+        expect(log, `${side} log when ${opener} opened the goodbye`).toContain("local bye");
+        expect(log, `${side} log when ${opener} opened the goodbye`).toContain("peer bye");
+      }
+      const openerLog = await readFile(sessionPath(path.join(dir, opener), code), "utf8");
+      expect(openerLog.indexOf("local bye")).toBeLessThan(openerLog.indexOf("peer bye"));
+      await relay.close();
+    }
+  });
+
+  it("leaves after saying goodbye when the other side never says it back", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "agenthop-session-"));
     const relay = await startRelay();
     const creatorLines = lineQueue();
-    const joinerLines = lineQueue();
     const creator = runSession({
       hello: "背景",
       lines: creatorLines,
       relay: relay.url,
       home: path.join(dir, "creator"),
+      byeWaitMs: 500,
     });
     const code = await waitForText(path.join(dir, "creator"), "waiting");
-    const joiner = runSession({ code, lines: joinerLines, relay: relay.url, home: path.join(dir, "joiner") });
-    await waitForText(path.join(dir, "joiner"), "peer hello");
-    joinerLines.push("确认");
+    // A peer that connects and confirms but never reads the room again.
+    await sendMessage({ code, text: "[[agenthop:connect]]", relay: relay.url });
+    await waitForText(path.join(dir, "creator"), "local hello");
+    await sendMessage({ code, text: "[[agenthop:confirm]] 确认", relay: relay.url });
     await waitForText(path.join(dir, "creator"), "ready");
 
     creatorLines.push("/bye");
-    await waitForText(path.join(dir, "joiner"), "peer bye");
-    await Promise.all([creator, joiner]);
-    expect(await readFile(sessionPath(path.join(dir, "creator"), code), "utf8")).toContain("local bye");
+    await creator;
+    const log = await readFile(sessionPath(path.join(dir, "creator"), code), "utf8");
+    expect(log).toContain("local bye");
+    expect(log).toContain("peer gone 对方没有把告别说回来");
     await relay.close();
   });
 

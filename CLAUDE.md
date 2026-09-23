@@ -23,6 +23,8 @@ node scripts/build-release.mjs          # 生成 skill-text.ts 并 bun --compile
 pnpm --filter @agenthop/relay-cf exec wrangler deploy                  # 部署生产中继
 ```
 
+`pnpm test` 按包串行（`--workspace-concurrency=1`）。这些测试起真的 server、真的中继、真的子进程，几个包一起跑会互相抢 CPU，症状是某一行等二十秒都不出现。别为了快把并发加回来。
+
 `@agenthop/relay-cf` 的 `test` 会跑两套配置：`vitest.config.ts`（workers pool，快）和 `vitest.live.config.ts`（真的 `wrangler dev`，30s 超时）。只想要快的那套时直接 `vitest run --config vitest.config.ts`。
 
 ## 包与依赖方向
@@ -49,7 +51,9 @@ tunnel ─┬─ relay-node（自建中继，ws + node:http）
 
 状态机靠**正文里的 wire 前缀**区分，不是靠协议字段：`[[agenthop:connect]]`、`[[agenthop:hello]] …`、`[[agenthop:confirm]] …`、`[[agenthop:say]] …`、`[[agenthop:bye]]`（`session.ts: parseWire`）。顺序固定为 `connect → hello → confirm → ready → say → bye`。加入方在 `wait-confirm` 之前写的行会被暂存（`early`），确认之后才放行——改这段时别把暂存丢了。
 
-**stdin 的语义**：一行正文就是一句话；`/bye`（`session.ts: BYE`）结束对话；EOF **不等于** bye——只写一行 `local input-closed` 然后继续收听，因为很多 agent harness 启动子进程时 stdin 本来就是关的，EOF 触发退出会让房间刚开就关。创建方发出 bye 后会 linger 两秒再关房间，好让对方读到那一行。
+**stdin 的语义**：一行正文就是一句话；`/bye`（`session.ts: BYE`）结束对话；EOF **不等于** bye——只写一行 `local input-closed` 然后继续收听，因为很多 agent harness 启动子进程时 stdin 本来就是关的，EOF 触发退出会让房间刚开就关。
+
+**告别是双向的**：收到 `[[agenthop:bye]]` 的一方自动把 bye 回过去再退出，先说的一方等这个回复，等不到就写 `peer gone`。`saidBye` 挡住无限对回。创建方作为回话方时要 linger 两秒再关房间，因为对方是隔着中继轮询读的。
 
 日志与 stdout 同一份内容：`<时间> <local|peer> <状态> <正文>`，写到 `<家目录>/.agenthop/sessions/<配对码>.log`（`session.ts: write`）。**stdout 的格式就是 agent 的接口**，改格式等于改 SKILL.md 的契约。`local` 恒指自己，`peer` 恒指对方——不要再让一个状态词在两边表示不同的事。
 

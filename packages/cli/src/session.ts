@@ -14,8 +14,10 @@ export const BYE = "/bye";
 const GONE_AFTER_MS = 15_000;
 const LOCAL_POLL_MS = 200;
 const RELAY_POLL_MS = 1000;
-/** After saying goodbye the room stays open this long, so the other side can still read the line. */
+/** After answering a goodbye the room stays open this long, so the other side can still read it. */
 const LINGER_MS = 2000;
+/** How long the side that said goodbye first waits for the other one to say it back. */
+const BYE_WAIT_MS = 10_000;
 
 export type LineSource = { take(): string[]; ended(): boolean };
 
@@ -29,6 +31,8 @@ export type SessionOptions = {
   signal?: AbortSignal;
   /** How long the joining side retries a failing relay before it writes `peer gone`. */
   goneAfterMs?: number;
+  /** How long to wait for the other side to say goodbye back. */
+  byeWaitMs?: number;
 };
 
 export function lineQueue(): LineSource & { push(text: string): void; end(): void } {
@@ -74,6 +78,7 @@ async function createSession(options: SessionOptions, home: string): Promise<voi
   write(logFile, "local", "waiting", host.code);
   const out = outbox(options.lines!, logFile);
   let after = 0;
+  let saidBye = 0;
   let phase: "wait-connect" | "wait-confirm" | "ready" = "wait-connect";
   try {
     while (!options.signal?.aborted) {
@@ -87,6 +92,11 @@ async function createSession(options: SessionOptions, home: string): Promise<voi
         const wire = parseWire(event.text);
         if (wire.kind === "bye") {
           write(logFile, "peer", "bye", wire.text);
+          if (saidBye) return;
+          await sayLocal(host, byeWire());
+          write(logFile, "local", "bye");
+          // The other side reads the room over the relay, so keep it open long enough to be read.
+          await delay(LINGER_MS);
           return;
         }
         if (phase === "wait-connect" && wire.kind === "connect") {
@@ -104,8 +114,9 @@ async function createSession(options: SessionOptions, home: string): Promise<voi
           write(logFile, "peer", "other", wire.text);
         }
       }
-      if (phase === "ready" && (await out.flush((text) => sayLocal(host, text)))) {
-        await delay(LINGER_MS);
+      if (!saidBye && phase === "ready" && (await out.flush((text) => sayLocal(host, text)))) saidBye = Date.now();
+      if (saidBye && Date.now() - saidBye > (options.byeWaitMs ?? BYE_WAIT_MS)) {
+        write(logFile, "peer", "gone", "对方没有把告别说回来");
         return;
       }
       await delay(LOCAL_POLL_MS);
@@ -129,6 +140,7 @@ async function joinSession(options: SessionOptions, home: string): Promise<void>
   const base = roomBase(options.relay, code);
   let after = 0;
   let failingSince = 0;
+  let saidBye = 0;
   let phase: "wait-hello" | "wait-confirm" | "ready" = "wait-hello";
   const early: string[] = [];
   while (!options.signal?.aborted) {
@@ -151,6 +163,9 @@ async function joinSession(options: SessionOptions, home: string): Promise<void>
       const wire = parseWire(event.text);
       if (wire.kind === "bye") {
         write(logFile, "peer", "bye", wire.text);
+        if (saidBye) return;
+        await send(byeWire());
+        write(logFile, "local", "bye");
         return;
       }
       if (phase === "wait-hello" && wire.kind === "hello") {
@@ -170,14 +185,20 @@ async function joinSession(options: SessionOptions, home: string): Promise<void>
       if (reply === BYE) {
         await send(byeWire());
         write(logFile, "local", "bye");
-        return;
+        saidBye = Date.now();
+        await delay(RELAY_POLL_MS);
+        continue;
       }
       await send(confirmWire(reply));
       write(logFile, "local", "confirm", reply);
       write(logFile, "local", "ready");
       phase = "ready";
     }
-    if (phase === "ready" && (await out.flush(send, typed))) return;
+    if (!saidBye && phase === "ready" && (await out.flush(send, typed))) saidBye = Date.now();
+    if (saidBye && Date.now() - saidBye > (options.byeWaitMs ?? BYE_WAIT_MS)) {
+      write(logFile, "peer", "gone", "对方没有把告别说回来");
+      return;
+    }
     await delay(RELAY_POLL_MS);
   }
 }

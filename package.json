@@ -7,7 +7,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "pnpm -r --if-present test",
+    "test": "pnpm -r --if-present --workspace-concurrency=1 test",
     "typecheck": "pnpm -r --if-present typecheck"
   }
 }

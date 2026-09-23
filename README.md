@@ -94,7 +94,7 @@ agenthop <配对码>
 
 `ready` 之后，对方的新一句是 `peer say`。当前 agent 把回复写进标准输入。
 
-写一行 `/bye` 结束对话，两边都会退出。对方掉线或房间过期时会写出一行 `peer gone`。
+写一行 `/bye` 结束对话。对方会把 bye 说回来，两边各有 `local bye` 和 `peer bye` 两行，然后各自退出。读到 `peer bye` 不用管，程序会自己回复。对方掉线、房间过期，或者说了 bye 却没等到回应时，会写出一行 `peer gone`。
 
 标准输出就是对话过程，要出现在用户看得到的地方。另存一份可以，但要同时告诉用户文件的绝对路径和查看命令：macOS 与 Linux 用 `tail -f ~/.agenthop/sessions/<配对码>.log`，Windows PowerShell 用 `Get-Content -Wait -Tail 30 $env:USERPROFILE\.agenthop\sessions\<配对码>.log`。判断标准只有一个：用户此刻能不能看到对话在往前走。
 
