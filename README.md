@@ -58,7 +58,7 @@ ARM64 把文件名换成 `agenthop-linux-arm64`。命令装到 `~/.local/bin/age
 
 `--skill-dir` 可重复。每个目录写入一份 `SKILL.md`。无论是否指定，都会再写一份到家目录下的 `.agenthop/SKILL.md`。
 
-已经安装过、并且程序版本至少是 v0.1.6 时：
+已经安装过时：
 
 ```bash
 agenthop update
@@ -68,11 +68,11 @@ agenthop update --force
 
 `--check` 只查询，不安装。`--force` 在版本相同的时候也重新安装。`upgrade` 和 `self-update` 与 `update` 相同。v0.1.5 及更早的程序没有 `update`，先下载当前发布的文件换上。
 
-不带参数，或执行 `agenthop help`，会打印完整用法。
+`agenthop --version` 打印版本。不带参数，或执行 `agenthop help`，会打印完整用法。
 
 ## 对话
 
-当前会话用一次工具调用启动命令，并在整个对话期间保持这个进程。对方的话从标准输出读，回复写进同一个标准输入。进程不会因为新消息而重新启动。不要使用 `--agent`，不要写 `reply.ps1` 或 `reply.sh`，不要调用 `claude -p` 或其他非交互 agent。
+用一次工具调用启动命令，让这个进程活到对话结束。对方的话从它的标准输出读，要说的话写进同一个标准输入，一行一句。进程不会因为新消息而重新启动。
 
 创建房间。后面的文字是任务背景，会作为 hello 发出：
 
@@ -86,11 +86,15 @@ agenthop "<任务背景>"
 agenthop <配对码>
 ```
 
+配对码不区分大小写，用空格或连字符隔开都行。
+
 标准输出出现 `peer hello` 后，由当前 agent 判断背景是否属实。属实就把确认写进标准输入，创建方随后输出 `ready`。不属实就询问用户，并且不写标准输入。
 
 `ready` 之后，对方的新一句是 `peer say`。当前 agent 把回复写进标准输入。
 
-标准输出就是对话过程，要出现在用户看得到的地方。可以另外存一份，同时告诉用户绝对路径和查看方式：macOS 与 Linux 用 `tail -f ~/.agenthop/sessions/<配对码>.log`，Windows PowerShell 用 `Get-Content -Wait -Tail 30 $env:USERPROFILE\.agenthop\sessions\<配对码>.log`。不要只把输出重定向到 agent 自己的 `out.log`，而让用户的任务面板一直显示没有输出。
+写一行 `/bye` 结束对话，两边都会退出。对方掉线或房间过期时会写出一行 `peer gone`。
+
+标准输出就是对话过程，要出现在用户看得到的地方。另存一份可以，但要同时告诉用户文件的绝对路径和查看命令：macOS 与 Linux 用 `tail -f ~/.agenthop/sessions/<配对码>.log`，Windows PowerShell 用 `Get-Content -Wait -Tail 30 $env:USERPROFILE\.agenthop\sessions\<配对码>.log`。判断标准只有一个：用户此刻能不能看到对话在往前走。
 
 日志每行的格式是：
 
@@ -98,7 +102,7 @@ agenthop <配对码>
 <时间> <local|peer> <状态> <正文>
 ```
 
-状态依次是 `waiting`、`connected`、`hello`、`confirm`、`ready`、`say`。
+状态依次是 `waiting`、`connected`、`hello`、`confirm`、`ready`、`say`，结束时是 `bye` 或 `gone`。
 
 换中继：
 
