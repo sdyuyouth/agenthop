@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, lstatSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, createWriteStream, lstatSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { once } from "node:events";
 import { homedir, platform, arch } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { DEFAULT_RELAY } from "./host.js";
@@ -53,8 +54,7 @@ export async function updateAgenthop(options: { check?: boolean; force?: boolean
   const target = options.target ?? installTarget();
   const downloaded = `${target}.download`;
   ensureDir(dirname(target));
-  await download(`${base}/download/${asset}`, downloaded);
-  const actual = sha256(downloaded);
+  const actual = await download(`${base}/download/${asset}`, downloaded);
   if (actual !== expected) {
     rmSync(downloaded, { force: true });
     throw new Error(`下载回来的文件和 ${sums.from} 上的校验和对不上，已经丢弃，没有替换现在的程序。\n  期望 ${expected}\n  实际 ${actual}`);
@@ -138,15 +138,27 @@ async function readLatest(base: string): Promise<ReleaseInfo> {
   return { tag: body.tag, assets: body.assets ?? [] };
 }
 
-async function download(url: string, file: string): Promise<void> {
+/** Streamed to disk and hashed on the way, so a 90 MiB program is never held in memory. */
+async function download(url: string, file: string): Promise<string> {
   const response = await fetch(url);
-  if (!response.ok) throw new Error(`update download failed (${response.status})`);
-  writeFileSync(file, Buffer.from(await response.arrayBuffer()));
+  if (!response.ok || !response.body) throw new Error(`update download failed (${response.status})`);
+  const digest = createHash("sha256");
+  const out = createWriteStream(file);
+  try {
+    for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
+      digest.update(chunk);
+      if (!out.write(chunk)) await once(out, "drain");
+    }
+  } finally {
+    out.end();
+    await once(out, "close");
+  }
   const size = lstatSync(file).size;
   if (size < 1_000_000) {
     rmSync(file, { force: true });
     throw new Error("downloaded file is too small");
   }
+  return digest.digest("hex");
 }
 
 export function replaceExecutable(target: string, next: string): void {

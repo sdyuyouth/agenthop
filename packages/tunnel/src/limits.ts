@@ -8,6 +8,8 @@ export const MAX_BODY = 1024 * 1024;
 export const IDLE_MS = 10 * 60 * 1000;
 
 export const MAX_CREATES_PER_MIN = 10;
+/** Posts into one room per minute. Reading is not counted: the joining side polls once a second. */
+export const MAX_POSTS_PER_MIN = 60;
 export const MAX_MISSES_PER_MIN = 60;
 export const RATE_WINDOW_MS = 60_000;
 

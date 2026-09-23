@@ -81,6 +81,25 @@ describe("node relay", () => {
     }
     expect(last).toBe(429);
   });
+
+  it("stops a flood of posts into one room but keeps serving reads", async () => {
+    const relay = await startRelay();
+    openRelays.push(relay);
+    const code = "1111-acid-acorn-acre";
+    await connectHost(relay.url, code);
+
+    let refused = 0;
+    for (let i = 0; i < 70; i++) {
+      const response = await fetch(`${relay.url}/r/${code}/`, { method: "POST", body: "hi" });
+      if (response.status === 429) refused++;
+      await response.arrayBuffer();
+    }
+    expect(refused).toBeGreaterThan(0);
+
+    const read = await fetch(`${relay.url}/r/${code}/agenthop/queue`);
+    expect(read.status).not.toBe(429);
+    await read.arrayBuffer();
+  });
 });
 
 async function connectHost(relayUrl: string, code: string, pass?: string): Promise<WebSocket> {

@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import {
   IDLE_MS,
   MAX_BODY,
+  PostCounter,
   RelaySession,
   TunnelError,
   decodeControl,
@@ -48,6 +49,7 @@ export class RateLimit extends DurableObject<Env> {
 
 export class Room extends DurableObject<Env> {
   private session: RelaySession | null = null;
+  private readonly posts = new PostCounter();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -119,6 +121,10 @@ export class Room extends DurableObject<Env> {
   private async proxy(request: Request): Promise<Response> {
     const host = this.readyHost();
     if (!host) return new Response("not found", { status: 404 });
+    // Reading is polled once a second; writing into someone's room is what needs a ceiling.
+    if (request.method !== "GET" && request.method !== "HEAD" && !this.posts.allow(Date.now())) {
+      return new Response("rate_limited", { status: 429 });
+    }
     const length = Number(request.headers.get("content-length") ?? "0");
     if (length > MAX_BODY) return new Response("body_too_large", { status: 413 });
     const path = request.headers.get("x-agenthop-path") ?? "/";

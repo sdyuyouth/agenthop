@@ -23,7 +23,8 @@ try {
         code: input.kind === "join" ? input.code : undefined,
         hello: input.kind === "create" ? input.hello : undefined,
         relay: flags.relay,
-        pass: flags.pass,
+        pass: flags.pass ?? process.env.AGENTHOP_PASS,
+        keepFiles: flags.acceptFiles,
         signal: stop.signal,
       });
       // The conversation is over. An open stdin would otherwise keep the process alive for good.
@@ -39,7 +40,7 @@ try {
       const running = await startRelay({
         listenHost: host,
         listenPort: portText ? Number(portText) : undefined,
-        pass: flags.pass,
+        pass: flags.pass ?? process.env.AGENTHOP_PASS,
       });
       writeLine(running.url);
       process.on("SIGINT", () => {
@@ -76,12 +77,15 @@ function printHelp(): void {
     "",
     "  断线会写 local reconnecting，用同一个配对码接回来后写 local reconnected。",
     "  送不出去的话写成 local undelivered <正文>，不会悄悄消失。",
-    "  没人加入而房间过期是 local expired；第三个人拿着同一个配对码说话是 peer refused。",
+    "  没人加入而房间过期是 local expired。",
+    "  peer refused 表示那一句没有进入对话也没有落盘：第三个人拿着同一个配对码，",
+    "  或者这次会话用量到顶（总量 8 MiB、2000 条、单条正文 64 KiB）。",
+    "  对方带附件写 peer files，默认只记名字不保存；要保存加 --accept-files。",
     "",
     "  日志：<家目录>/.agenthop/sessions/<配对码>.log",
     "  每行：<时间> <local|peer> <状态> <正文>（本机时间，带时区偏移）",
     "  状态：waiting connected hello confirm ready say bye",
-    "        reconnecting reconnected undelivered gone expired refused input-closed",
+    "        reconnecting reconnected undelivered gone expired refused files input-closed",
     "",
     "安装",
     "  下载 https://github.com/sdyuyouth/agenthop/releases/latest",
@@ -107,7 +111,8 @@ function printHelp(): void {
     "中继",
     "  默认 https://agenthop.imatrix.tech",
     "  --relay URL 或环境变量 AGENTHOP_RELAY",
-    "  自建时两边都加 --pass SECRET",
+    "  自建时两边都加 --pass SECRET，或设环境变量 AGENTHOP_PASS",
+    "  中继对同一个房间的写入限到每分钟 60 条，读取不计。",
     "  agenthop relay [--listen HOST:PORT] [--pass SECRET]",
     "",
     "  agenthop help       agenthop --version",

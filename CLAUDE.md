@@ -69,6 +69,10 @@ tunnel ─┬─ relay-node（自建中继，ws + node:http）
 
 `room.ts` 的 `Room` 把 A2A 请求和本地 control 请求都收敛到 `admit()`，并用 `run()` 串行化。事件回调发生在锁释放之后（`takeNew()` + watermark），**动 `Room` 时保持这个顺序**，否则监听者在回调里说话会重入死锁。
 
+**拒绝必须发生在落盘之前**。`execute` 先调 `refuse()`（`accept` 回调 + 配额），通过了才 `storeFiles`。v0.3.0 的顺序是反的：陌生人的消息在会话层被记成 `peer refused`，字节却已经写进 `~/.agenthop/inbox` 了。`accept` 由 session 提供（它知道 wire 和 peer id），执行点在 Room——别把 wire 格式挪进 Room，也别把检查挪回 session。
+
+配额在 `DEFAULT_LIMITS`（8 MiB / 2000 条 / 单条正文 64 KiB），超了走 `onRefused`，不进 `Talk`。附件默认**不落盘**（`keepFiles`，`--accept-files` 打开），只把名字放进事件，session 写一行 `peer files`。
+
 `talk.test.ts` 覆盖日志顺序，`e2e.test.ts` 起真中继 + 真 host 覆盖传输层（含附件落到 `inbox/`），`session.test.ts` 用 `lineQueue` 跑完整的握手、bye、gone、input-closed。
 
 ## 需要记住的约定
@@ -76,7 +80,9 @@ tunnel ─┬─ relay-node（自建中继，ws + node:http）
 - **SKILL.md 是生成源**：`skill/SKILL.md` 由 `scripts/build-release.mjs` 转成 `packages/cli/src/skill-text.ts`（被 `agenthop install` 写盘）。改技能文案后要跑一次 build，否则二进制里还是旧文本。README、`bin.ts` 的 `printHelp`、`skill/SKILL.md` 三处说法必须一致，**以 SKILL.md 为准**。
 - **文案写正面规则，不要堆禁令**。真正的要求只有两条：一个进程从头跑到尾，整个过程用户看得见。不要再去点名某个具体错法（某某命令、某某文件名）——那是在描述一次事故，不是在描述规则。老的 flag 和命令在 `args.ts` 的 `RETIRED_FLAGS` / `RETIRED_COMMANDS` 里给迁移提示，这是唯一该出现旧名字的地方。
 - **版本号在 `packages/cli/src/version.ts`**，`agenthop update` 拿它和中继 `/latest` 比较。发版要改它。
-- **更新要校验**：`scripts/build-release.mjs` 生成 `dist/SHA256SUMS`，它是 release 的第六个资产，也在 Worker 的 `RELEASE_FILES` 白名单里（漏了白名单，取不到校验和的用户就更新不了）。`update` 先拿校验和再下程序，对不上就丢掉不替换。**校验和优先从 GitHub 取、程序从中继取**，这样单独一方换不掉你的程序；GitHub 取不到才退回中继那份并说明。`AGENTHOP_RELEASES_BASE` 可以改校验和来源（测试在用）。
+- **两个上限不要再对不上**：`packages/agent` 的 `MAX_ATTACHMENT_BYTES` 是 512 KiB，但 express 的 JSON body 默认只有 100 KiB，于是 96 KiB 的附件就会撞上一个 HTML 413。`host.ts` 现在先挂 `express.json({ limit: "2mb" })`（body-parser 见到 `req._body` 就不会再解析一次），512 KiB 才真的能过。改任一处都要把另一处一起看。
+- **中继对同一个房间的写入限速**在 `tunnel` 的 `PostCounter`（60/分钟），两个中继共用；**读取不计**，因为加入方每秒轮询一次。
+- **更新要校验**：`scripts/build-release.mjs` 生成 `dist/SHA256SUMS`，它是 release 的第六个资产，也在 Worker 的 `RELEASE_FILES` 白名单里（漏了白名单，取不到校验和的用户就更新不了）。`update` 先拿校验和再下程序（流式写盘、边写边算 sha256，不把 90 MiB 读进内存），对不上就丢掉不替换。**校验和优先从 GitHub 取、程序从中继取**，这样单独一方换不掉你的程序；GitHub 取不到才退回中继那份并说明。`AGENTHOP_RELEASES_BASE` 可以改校验和来源（测试在用）。
 - **技能跟着程序一起更新**：`install --skill-dir` 把目录记到 `~/.agenthop/install.json`，`update` 换完程序后再跑一次**新程序**的 `install --skill-only` 把新 SKILL.md 写回去——技能文本编译在二进制里，旧进程手里只有旧文本。写不成时打印手动命令，不要静默留一个过期的技能文件。
 - **不要把程序复制到它自己身上**。`install` 从已安装位置运行时 source 和 dest 是同一个文件，copyFileSync 会把它删掉；路径字符串比较不够，家目录经过符号链接时同一个文件有两种写法。用 `isSameFile`（inode+dev），复制走 `placeCommand`（先写 `.new` 再改名）。这个 bug 在 v0.2.0/v0.2.1 上真的删过用户的命令。
 - **默认中继 `https://agenthop.imatrix.tech` 写在 `host.ts: DEFAULT_RELAY`**；换中继是运行时的事（`--relay` / `AGENTHOP_RELAY`），不要为了改默认地址发版。

@@ -8,7 +8,7 @@ import { decodeControl, generateCode, relayEndpoints } from "@agenthop/tunnel";
 import express from "express";
 import { WebSocket } from "ws";
 import { HostBridge } from "./bridge.js";
-import { listenControl, Room } from "./room.js";
+import { listenControl, Room, type RoomLimits } from "./room.js";
 import { type SessionEvent } from "./talk.js";
 import { version } from "./version.js";
 
@@ -16,6 +16,8 @@ export const DEFAULT_RELAY = "https://agenthop.imatrix.tech";
 
 /** How long a dropped room keeps being reopened before the conversation is called off. */
 export const RECOVER_MS = 45_000;
+/** A relay that accepts the socket but never answers must not hang the command forever. */
+export const HANDSHAKE_MS = 15_000;
 
 export type HostOptions = {
   relay?: string;
@@ -23,6 +25,12 @@ export type HostOptions = {
   code?: string;
   home?: string;
   onEvent?: (event: SessionEvent) => void;
+  /** Decides whether an incoming line belongs to this conversation, before anything is kept. */
+  accept?: (text: string) => boolean;
+  onRefused?: (reason: string, text: string) => void;
+  /** Write incoming attachments to the inbox. Off unless the person asked for it. */
+  keepFiles?: boolean;
+  limits?: Partial<RoomLimits>;
   /** The socket dropped and the room is being reopened with the same code. */
   onReconnecting?: (reason: string) => void;
   onReconnected?: () => void;
@@ -44,9 +52,18 @@ export async function startHost(options: HostOptions = {}): Promise<RunningHost>
   const relay = options.relay ?? process.env.AGENTHOP_RELAY ?? DEFAULT_RELAY;
   const home = options.home ?? path.join(homedir(), ".agenthop");
   const { publicBase, hostUrl } = relayEndpoints(relay, code);
-  const room = new Room(path.join(home, "inbox"), options.onEvent);
+  const room = new Room({
+    inboxDir: path.join(home, "inbox"),
+    onEvent: options.onEvent,
+    accept: options.accept,
+    onRefused: options.onRefused,
+    keepFiles: options.keepFiles,
+    limits: options.limits,
+  });
   const control = await listenControl(room);
   const app = express();
+  // The SDK's own parser would cap a body at 100 KiB, well under the attachment limit.
+  app.use(express.json({ limit: "2mb" }));
   const localUrl = await listen(app);
   const card = agentCard(localUrl.url);
   const handler = new DefaultRequestHandler(card, new InMemoryTaskStore(), room.executor());
@@ -85,7 +102,12 @@ export async function startHost(options: HostOptions = {}): Promise<RunningHost>
         });
       });
       ws.send(JSON.stringify({ v: 1, type: "open", code }));
-      const opened = await ready;
+      const opened = await Promise.race([
+        ready,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`中继 ${relay} 收下了连接但没有回应，${HANDSHAKE_MS / 1000} 秒后放弃`)), HANDSHAKE_MS).unref(),
+        ),
+      ]);
       ws.on("message", (data, isBinary) => {
         if (!isBinary) return;
         bridge.onFrame(new Uint8Array(data as Buffer));

@@ -8,6 +8,7 @@ export type Flags = {
   check: boolean;
   force: boolean;
   skillOnly: boolean;
+  acceptFiles: boolean;
   help: boolean;
   version: boolean;
 };
@@ -39,7 +40,7 @@ const RETIRED_COMMANDS = new Set(["host", "join", "watch", "send", "reply", "que
 export const COMMANDS = new Set(["install", "update", "upgrade", "self-update", "relay", "help", "version"]);
 
 export function parseArgs(args: string[]): Parsed {
-  const flags: Flags = { skillDirs: [], check: false, force: false, skillOnly: false, help: false, version: false };
+  const flags: Flags = { skillDirs: [], check: false, force: false, skillOnly: false, acceptFiles: false, help: false, version: false };
   const positionals: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i] ?? "";
@@ -52,7 +53,8 @@ export function parseArgs(args: string[]): Parsed {
       const value = args[++i];
       if (!value) throw new Error("--skill-dir 后面要跟一个目录");
       flags.skillDirs.push(value);
-    } else if (arg === "--skill-only") flags.skillOnly = true;
+    } else if (arg === "--accept-files") flags.acceptFiles = true;
+    else if (arg === "--skill-only") flags.skillOnly = true;
     else if (arg === "--check") flags.check = true;
     else if (arg === "--force") flags.force = true;
     else if (arg === "--help" || arg === "-h") flags.help = true;

@@ -4,7 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { startRelay } from "@agenthop/relay-node";
 import { sendMessage } from "../src/send.js";
-import { lineQueue, runSession, sayWire, sessionPath } from "../src/session.js";
+import { lineQueue, runSession, sessionPath } from "../src/session.js";
 
 describe("session", () => {
   it("opens the channel when the joining agent writes a confirmation", async () => {
@@ -31,7 +31,7 @@ describe("session", () => {
     await waitForText(path.join(dir, "joiner"), "peer hello 我需要向对方了解鲁越森");
     joinerLines.push("确认建立通道");
     await waitForText(path.join(dir, "creator"), "ready");
-    await sendMessage({ code, text: sayWire(undefined, "近况如何"), relay: relay.url });
+    joinerLines.push("近况如何");
     await waitForText(path.join(dir, "creator"), "peer say 近况如何");
     creatorLines.push("下一句");
     await waitForText(path.join(dir, "creator"), "local say 下一句");
@@ -279,7 +279,7 @@ describe("session", () => {
 
     creatorLines.end();
     await waitForText(path.join(dir, "creator"), "local input-closed");
-    await sendMessage({ code, text: sayWire(undefined, "还在听吗"), relay: relay.url });
+    joinerLines.push("还在听吗");
     await waitForText(path.join(dir, "creator"), "peer say 还在听吗");
 
     joinerLines.push("/bye");

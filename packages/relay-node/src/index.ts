@@ -2,6 +2,7 @@ import http from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import {
   IDLE_MS,
+  PostCounter,
   RateCounters,
   RelaySession,
   TunnelError,
@@ -29,6 +30,7 @@ export type RunningRelay = {
 };
 
 type Room = {
+  posts: PostCounter;
   code: string;
   session: RelaySession | null;
   socket: WebSocket | null;
@@ -73,6 +75,11 @@ export async function startRelay(options: RelayOptions = {}): Promise<RunningRel
         }
         res.writeHead(404);
         res.end("not found");
+        return;
+      }
+      if (req.method !== "GET" && req.method !== "HEAD" && !room.posts.allow(now())) {
+        res.writeHead(429);
+        res.end("rate_limited");
         return;
       }
       room.deadline = now() + idleMs;
@@ -138,7 +145,7 @@ export async function startRelay(options: RelayOptions = {}): Promise<RunningRel
       return;
     }
     const publicBase = `${httpOrigin(requestUrl, server)}/r/${encodeURIComponent(code)}/`;
-    const room: Room = { code, session: null, socket: ws, ready: false, deadline: now() + idleMs, publicBase };
+    const room: Room = { code, session: null, socket: ws, ready: false, deadline: now() + idleMs, publicBase, posts: new PostCounter() };
     rooms.set(roomId, room);
     ws.once("message", (data, isBinary) => {
       if (isBinary) {

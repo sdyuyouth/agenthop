@@ -30,6 +30,8 @@ export type SessionOptions = {
   recoverMs?: number;
   /** How long to wait for the other side to say goodbye back. */
   byeWaitMs?: number;
+  /** Write attachments the other side sends into the inbox. */
+  keepFiles?: boolean;
 };
 
 export function lineQueue(): LineSource & { push(text: string): void; end(): void } {
@@ -63,12 +65,26 @@ async function createSession(options: SessionOptions, home: string): Promise<voi
   const hello = options.hello?.trim() ?? "";
   if (!hello) throw new Error("usage: agenthop <任务背景>");
   let lost = "";
+  let peerId: string | undefined;
   const logFile = () => sessionPath(home, host.code);
   const host = await startHost({
     relay: options.relay,
     pass: options.pass,
     home,
+    keepFiles: options.keepFiles,
     recoverMs: options.recoverMs,
+    accept: (text) => {
+      const wire = parseWire(text);
+      if (peerId === undefined) {
+        if (wire.kind === "connect") peerId = wire.id;
+        return true;
+      }
+      // An older peer signs nothing, so there is nothing to tell apart.
+      if (peerId === "") return true;
+      if (wire.kind === "connect") return false;
+      return wire.id === peerId;
+    },
+    onRefused: (reason, text) => write(logFile(), "peer", "refused", text ? `${reason}：${text}` : reason),
     onReconnecting: (reason) => write(logFile(), "local", "reconnecting", `${reason}，正在用同一个配对码把房间接回来`),
     onReconnected: () => write(logFile(), "local", "reconnected", "房间接回来了，对话可以继续"),
     onGone: (reason) => {
@@ -81,7 +97,6 @@ async function createSession(options: SessionOptions, home: string): Promise<voi
   const out = outbox(options.lines!, log);
   let after = 0;
   let saidBye = 0;
-  let peerId: string | undefined;
   let phase: "wait-connect" | "wait-confirm" | "ready" = "wait-connect";
   try {
     for (;;) {
@@ -102,10 +117,7 @@ async function createSession(options: SessionOptions, home: string): Promise<voi
         after = event.seq;
         if (event.from !== "peer") continue;
         const wire = parseWire(event.text);
-        if (peerId !== undefined && peerId !== "" && wire.id && wire.id !== peerId) {
-          write(log, "peer", "refused", `另一个人拿着同一个配对码说话，已经忽略：${wire.text || wire.kind}`);
-          continue;
-        }
+        noteFiles(log, event, options.keepFiles === true);
         if (wire.kind === "bye") {
           write(log, "peer", "bye", wire.text);
           out.reportUnsent();
@@ -117,7 +129,6 @@ async function createSession(options: SessionOptions, home: string): Promise<voi
           return;
         }
         if (phase === "wait-connect" && wire.kind === "connect") {
-          peerId = wire.id;
           write(log, "peer", "connected");
           await say(helloWire(hello));
           write(log, "local", "hello", hello);
@@ -128,8 +139,6 @@ async function createSession(options: SessionOptions, home: string): Promise<voi
           phase = "ready";
         } else if (phase === "ready" && wire.kind === "say") {
           write(log, "peer", "say", wire.text);
-        } else if (wire.kind === "connect") {
-          write(log, "peer", "refused", "另一个人拿着同一个配对码想加入，已经忽略");
         } else if (wire.kind === "other") {
           write(log, "peer", "other", wire.text);
         }
@@ -288,6 +297,14 @@ async function farewell(
   } catch {
     write(logFile, "local", "undelivered", BYE);
   }
+}
+
+/** Attachments are not written to disk unless the person asked for that, so say what arrived. */
+function noteFiles(logFile: string, event: SessionEvent, kept: boolean): void {
+  if (event.files.length === 0) return;
+  const names = event.files.map((file) => file.name).join(" ");
+  if (kept) write(logFile, "peer", "files", event.files.map((file) => file.path).join(" "));
+  else write(logFile, "peer", "files", `对方带了 ${event.files.length} 个文件，没有保存（要保存加 --accept-files）：${names}`);
 }
 
 async function sayLocal(host: RunningHost, text: string): Promise<void> {

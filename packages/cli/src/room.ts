@@ -11,16 +11,42 @@ import {
 import { filesFromPaths, messageFromParts, partsFromMessage, safeName, type HopMessage } from "@agenthop/agent";
 import { Talk, type SessionEvent, type SessionFile, type Side } from "./talk.js";
 
+/** What one conversation may spend. Anyone holding the code can post, so the room counts. */
+export type RoomLimits = { bytes: number; messages: number; textBytes: number };
+
+export const DEFAULT_LIMITS: RoomLimits = {
+  bytes: 8 * 1024 * 1024,
+  messages: 2000,
+  textBytes: 64 * 1024,
+};
+
+export type RoomOptions = {
+  inboxDir: string;
+  onEvent?: (event: SessionEvent) => void;
+  /** Decides whether an incoming line belongs to this conversation, before anything is kept. */
+  accept?: (text: string) => boolean;
+  /** Why something was turned away. The session writes it down. */
+  onRefused?: (reason: string, text: string) => void;
+  /** Write incoming attachments to the inbox. Off unless the person asked for it. */
+  keepFiles?: boolean;
+  limits?: Partial<RoomLimits>;
+};
+
 /** The room's ordered log, the files it stores, and the A2A endpoint the joining side posts to. */
 export class Room {
   private readonly talk = new Talk();
   private tail: Promise<void> = Promise.resolve();
   private watermark = 0;
+  private readonly inboxDir: string;
+  private readonly onEvent?: (event: SessionEvent) => void;
+  private readonly limits: RoomLimits;
+  private spent = { bytes: 0, messages: 0 };
 
-  constructor(
-    private readonly inboxDir: string,
-    private readonly onEvent?: (event: SessionEvent) => void,
-  ) {}
+  constructor(private readonly options: RoomOptions) {
+    this.inboxDir = options.inboxDir;
+    this.onEvent = options.onEvent;
+    this.limits = { ...DEFAULT_LIMITS, ...options.limits };
+  }
 
   executor(): AgentExecutor {
     return {
@@ -46,9 +72,36 @@ export class Room {
 
   private async execute(context: RequestContext, bus: ExecutionEventBus): Promise<void> {
     const message = messageFromParts(context.userMessage.parts);
-    const files = await this.storeFiles(context.taskId, message);
+    const refusal = this.refuse(message);
+    if (refusal) {
+      // Nothing is stored and nothing reaches the conversation: turning it away has to mean that.
+      this.options.onRefused?.(refusal, message.text);
+      bus.publish(AgentEvent.task(openTask(context, partsFromMessage({ text: JSON.stringify({ refused: refusal }), files: [] }))));
+      return;
+    }
+    const files = this.options.keepFiles ? await this.storeFiles(context.taskId, message) : listOnly(message);
     const event = await this.admit({ id: context.taskId, from: "peer", message, files });
     bus.publish(AgentEvent.task(openTask(context, partsFromMessage({ text: JSON.stringify(event), files: [] }))));
+  }
+
+  /** Reasons an incoming line is not part of this conversation, checked before anything is kept. */
+  private refuse(message: HopMessage): string | undefined {
+    if (this.options.accept && !this.options.accept(message.text)) {
+      return "另一个人拿着同一个配对码说话，已经忽略";
+    }
+    const size = Buffer.byteLength(message.text) + message.files.reduce((sum, file) => sum + file.bytes.byteLength, 0);
+    if (Buffer.byteLength(message.text) > this.limits.textBytes) {
+      return `一条消息的正文超过 ${Math.round(this.limits.textBytes / 1024)} KiB，已经拒绝`;
+    }
+    if (this.spent.messages + 1 > this.limits.messages) {
+      return `这次会话的消息条数已经到上限 ${this.limits.messages}，后面的都拒绝`;
+    }
+    if (this.spent.bytes + size > this.limits.bytes) {
+      return `这次会话的总量已经到上限 ${Math.round(this.limits.bytes / 1024 / 1024)} MiB，后面的都拒绝`;
+    }
+    this.spent.messages += 1;
+    this.spent.bytes += size;
+    return undefined;
   }
 
   /** Events are handed to `onEvent` after the lock is released, so a listener may speak without re-entering it. */
@@ -120,6 +173,11 @@ export async function listenControl(room: Room): Promise<{ url: string; close: (
     url: `http://127.0.0.1:${address.port}`,
     close: () => new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve()))),
   };
+}
+
+/** The names came in, the bytes did not. */
+function listOnly(message: HopMessage): SessionFile[] {
+  return message.files.map((file) => ({ name: safeName(file.name), mediaType: file.mediaType, path: "" }));
 }
 
 function openTask(context: RequestContext, parts: Task["artifacts"][number]["parts"]): Task {

@@ -98,7 +98,9 @@ agenthop <配对码>
 
 写一行 `/bye` 结束对话。对方会把 bye 说回来，两边各有 `local bye` 和 `peer bye` 两行，然后各自退出。读到 `peer bye` 不用管，程序会自己回复。按 Ctrl-C 也会先送出 bye 再退出。
 
-连接断了会写 `local reconnecting`，用同一个配对码接回来之后写 `local reconnected`，对话继续。送不出去的话会写成 `local undelivered <正文>`，不会悄悄消失。对方不在了是 `peer gone`；一直没人加入、房间过期是 `local expired`；第三个人拿着同一个配对码说话是 `peer refused`。
+连接断了会写 `local reconnecting`，用同一个配对码接回来之后写 `local reconnected`，对话继续。送不出去的话会写成 `local undelivered <正文>`，不会悄悄消失。对方不在了是 `peer gone`；一直没人加入、房间过期是 `local expired`。
+
+`peer refused` 表示这一句既没有进入对话，也没有落到磁盘：可能是第三个人拿着同一个配对码，也可能是这次会话的用量到了上限（总量 8 MiB、2000 条、单条正文 64 KiB）。对方带附件时写 `peer files`，**默认只记名字不保存**，要保存加 `--accept-files`。中继那边对同一个房间的写入也限到每分钟 60 条，读取不计。
 
 标准输出就是对话过程，要出现在用户看得到的地方。另存一份可以，但要同时告诉用户文件的绝对路径和查看命令：macOS 与 Linux 用 `tail -f ~/.agenthop/sessions/<配对码>.log`，Windows PowerShell 用 `Get-Content -Wait -Tail 30 $env:USERPROFILE\.agenthop\sessions\<配对码>.log`。判断标准只有一个：用户此刻能不能看到对话在往前走。
 
@@ -108,7 +110,7 @@ agenthop <配对码>
 <时间> <local|peer> <状态> <正文>
 ```
 
-状态依次是 `waiting`、`connected`、`hello`、`confirm`、`ready`、`say`，结束时是 `bye`、`gone` 或 `expired`；中途还可能出现 `reconnecting`、`reconnected`、`undelivered`、`refused`、`input-closed`。时间是本机时间，带时区偏移。
+状态依次是 `waiting`、`connected`、`hello`、`confirm`、`ready`、`say`，结束时是 `bye`、`gone` 或 `expired`；中途还可能出现 `reconnecting`、`reconnected`、`undelivered`、`refused`、`files`、`input-closed`。时间是本机时间，带时区偏移。
 
 换中继：
 
@@ -116,7 +118,7 @@ agenthop <配对码>
 agenthop --relay https://example.test "<任务背景>"
 ```
 
-也可以设置环境变量 `AGENTHOP_RELAY`。自建中继并且设置了密码时，两边都加上 `--pass <密码>`。
+也可以设置环境变量 `AGENTHOP_RELAY`。自建中继并且设置了密码时，两边都加上 `--pass <密码>`，或者设环境变量 `AGENTHOP_PASS`——命令行参数会出现在 `ps` 里，环境变量不会。
 
 ## 自建中继
 
