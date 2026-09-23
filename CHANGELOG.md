@@ -2,7 +2,7 @@
 
 每个版本的完整说明在 [Releases](https://github.com/sdyuyouth/agenthop/releases)。这里只留下变了什么。
 
-## 未发布
+## v0.3.3
 
 - **自建中继修复**：host 连上后立刻发出的 `open` 帧可能被丢掉，于是它永远等不到 `ready`。中继现在在接受连接之前就把房间 id 算好，接受与挂监听之间不再有任何等待。托管的 Cloudflare 中继不受影响。
 - 一场对话的两端各写各的日志：`<配对码>.create.log` 和 `<配对码>.join.log`。同机上两个 agent 共用家目录时，原先两端写进同一个文件，记录交织在一起。
