@@ -6,7 +6,9 @@ import {
   mkdirSync,
   readFileSync,
   readlinkSync,
+  renameSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -91,7 +93,7 @@ function installCommand(): string {
     const destDir = join(process.env.LOCALAPPDATA || join(homedir(), "AppData", "Local"), "agenthop");
     ensureDir(destDir);
     const dest = join(destDir, "agenthop.exe");
-    if (!dev && resolve(source) !== resolve(dest)) copyFileSync(source, dest);
+    if (!dev) placeCommand(source, dest);
     else writeFileSync(join(destDir, "agenthop.cmd"), `@echo off\r\n"${process.execPath}" "${source}" %*\r\n`);
     ensureWindowsPath(destDir);
     return dev ? join(destDir, "agenthop.cmd") : dest;
@@ -106,13 +108,47 @@ function installCommand(): string {
       symlinkSync(source, dest);
     }
   } else {
-    // Installing from the installed copy: there is nothing to copy, and on Linux a running
-    // program cannot be written to.
-    if (resolve(source) !== resolve(dest)) copyFileSync(source, dest);
-    chmodSync(dest, 0o755);
+    placeCommand(source, dest);
   }
   ensureUnixPath(destDir);
   return dest;
+}
+
+/**
+ * Put the program at `dest`. Installing from the installed copy has nothing to copy: the two
+ * paths can be spelled differently and still be one file, and copying a file onto itself
+ * deletes it. Everything else is copied beside the target and renamed into place, so a copy
+ * that fails cannot leave the machine without a program.
+ */
+export function placeCommand(source: string, dest: string): void {
+  if (isSameFile(source, dest)) {
+    try {
+      chmodSync(dest, 0o755);
+    } catch {
+      // Windows may refuse the mode. The program is already in place either way.
+    }
+    return;
+  }
+  const staged = `${dest}.new`;
+  rmSync(staged, { force: true });
+  copyFileSync(source, staged);
+  try {
+    chmodSync(staged, 0o755);
+  } catch {
+    // Windows may refuse the mode. The file is still the program.
+  }
+  renameSync(staged, dest);
+}
+
+/** Two names for one file: a symlinked home, a hard link, or simply the same path. */
+export function isSameFile(a: string, b: string): boolean {
+  try {
+    const left = statSync(a);
+    const right = statSync(b);
+    return left.ino === right.ino && left.dev === right.dev;
+  } catch {
+    return resolve(a) === resolve(b);
+  }
 }
 
 export function ensureDir(dir: string): void {

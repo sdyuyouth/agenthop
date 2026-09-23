@@ -1,8 +1,8 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { commandSource, readSkillDirs, rememberSkillDirs, writeSkillFiles } from "../src/install.js";
+import { commandSource, isSameFile, placeCommand, readSkillDirs, rememberSkillDirs, writeSkillFiles } from "../src/install.js";
 
 describe("skill install", () => {
   it("writes SKILL.md into the home directory and into each directory the caller names", async () => {
@@ -47,5 +47,34 @@ describe("skill install", () => {
   it("has no directories to remember before the first install", async () => {
     const home = path.join(await mkdtemp(path.join(tmpdir(), "agenthop-install-")), "home");
     expect(readSkillDirs(home)).toEqual([]);
+  });
+
+  it("leaves the program alone when the source and the destination are one file", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "agenthop-install-"));
+    const real = path.join(dir, "bin");
+    await mkdir(real);
+    const program = path.join(real, "agenthop");
+    await writeFile(program, "the program");
+    await symlink(real, path.join(dir, "link"));
+    const otherName = path.join(dir, "link", "agenthop");
+
+    expect(isSameFile(program, otherName)).toBe(true);
+    placeCommand(otherName, program);
+    expect(await readFile(program, "utf8")).toBe("the program");
+  });
+
+  it("replaces a different program without destroying it when the copy fails", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "agenthop-install-"));
+    const dest = path.join(dir, "agenthop");
+    const source = path.join(dir, "downloaded");
+    await writeFile(dest, "old program");
+    await writeFile(source, "new program");
+    expect(isSameFile(source, dest)).toBe(false);
+
+    placeCommand(source, dest);
+    expect(await readFile(dest, "utf8")).toBe("new program");
+
+    expect(() => placeCommand(path.join(dir, "missing"), dest)).toThrow();
+    expect(await readFile(dest, "utf8")).toBe("new program");
   });
 });
