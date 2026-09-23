@@ -27,7 +27,7 @@ pnpm --filter @agenthop/relay-cf exec wrangler deploy                  # 部署�
 
 `@agenthop/relay-cf` 的 `test` 会跑两套配置：`vitest.config.ts`（workers pool，快）和 `vitest.live.config.ts`（真的 `wrangler dev`，30s 超时）。只想要快的那套时直接 `vitest run --config vitest.config.ts`。live 那套在 CI 上默认跳过（要跑设 `AGENTHOP_LIVE=1`），因为它要现拉 workerd。
 
-`session.test.ts` 里的会话用 `start()` 起，它把提前失败的原因记进 `failures`，`waitForText` 会把原因抛出来——不这样的话一个早退的会话只会表现成"某一行没等到"。偶尔仍会在全量跑时看到 `waiting did not arrive`（几十次里一次，单独跑从不复现），根因未定，现在至少会报出真实原因。
+`session.test.ts` 里的会话用 `start()` 起，它把提前失败的原因记进 `failures`，`waitForText` 会把原因抛出来——不这样的话一个早退的会话只会表现成"某一行没等到"。`relay.test.ts` 的 `step()` 同理，给每个 await 一个标签。**这两处不要去掉**：长期被当成"机器慢"的那个偶发，正是靠它们才暴露出真实原因（relay-node 在 accept 之后才挂监听器的竞态，见下）。
 
 ## 包与依赖方向
 
@@ -36,6 +36,8 @@ tunnel ─┬─ relay-node（自建中继，ws + node:http）
         ├─ relay-cf（Cloudflare Worker，Durable Object 每房间一个）
         └─ cli ── agent（A2A Part ↔ HopMessage 编解码、附件上限 512 KiB）
 ```
+
+**接受连接之前把异步的事做完。** `relay-node` 曾经先 `handleUpgrade` 再 `await roomIdFromCode`，然后才挂 `ws.once("message")`——host 在这个窗口里发出的 `open` 帧没人接，于是永远等不到 `ready`。快机器上几乎碰不到，CI 上很常见。现在房间 id 在 accept 之前算好，accept 与挂监听之间没有任何 await。`relay-cf` 没有这个问题（DO 的 `webSocketMessage` 是常驻方法，房间 id 在 Worker 里就算好了）。
 
 `@agenthop/tunnel` 是唯一被两个中继共享的实现：`session.ts` 的 `RelaySession` 就是房间逻辑本体（转发、Agent Card 改写、空闲关闭），两个中继各自只写自己的传输层。**修 bug 优先改 tunnel，不要在两个中继里各写一遍。**
 
