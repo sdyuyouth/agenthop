@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 安全问题
+    url: https://github.com/sdyuyouth/agenthop/security/advisories/new
+    about: 涉及未公开的漏洞细节时，请私下提交 Security Advisory

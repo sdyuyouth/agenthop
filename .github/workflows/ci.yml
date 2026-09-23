@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["20", "24"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Install pnpm
+        run: corepack enable && corepack prepare pnpm@12.4.1 --activate
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm typecheck
+
+      # The tests hold real servers, a real relay and real child processes, so they run one
+      # package at a time. The relay-cf live test starts `wrangler dev` and sits this one out
+      # unless AGENTHOP_LIVE is set; `pnpm test` runs it locally.
+      - run: pnpm test
+        env:
+          AGENTHOP_LIVE: ""

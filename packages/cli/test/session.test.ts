@@ -1,10 +1,26 @@
 import { mkdtemp, readFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { startRelay } from "@agenthop/relay-node";
 import { sendMessage } from "../src/send.js";
 import { lineQueue, runSession, sessionPath } from "../src/session.js";
+
+/**
+ * A session that dies early leaves nothing in the log, and waiting for a line it will never
+ * write reports a timeout instead of the reason. Keep the reason.
+ */
+let failures: unknown[] = [];
+
+beforeEach(() => {
+  failures = [];
+});
+
+function start(options: Parameters<typeof runSession>[0]): Promise<void> {
+  return runSession(options).catch((error) => {
+    failures.push(error);
+  });
+}
 
 describe("session", () => {
   it("opens the channel when the joining agent writes a confirmation", async () => {
@@ -13,7 +29,7 @@ describe("session", () => {
     const stop = new AbortController();
     const creatorLines = lineQueue();
     const joinerLines = lineQueue();
-    const creator = runSession({
+    const creator = start({
       hello: "我需要向对方了解鲁越森",
       lines: creatorLines,
       relay: relay.url,
@@ -21,7 +37,7 @@ describe("session", () => {
       signal: stop.signal,
     });
     const code = await waitForText(path.join(dir, "creator"), "waiting");
-    const joiner = runSession({
+    const joiner = start({
       code: code.toUpperCase(),
       lines: joinerLines,
       relay: relay.url,
@@ -48,7 +64,7 @@ describe("session", () => {
     const dir = await mkdtemp(path.join(tmpdir(), "agenthop-session-"));
     const relay = await startRelay();
     const stop = new AbortController();
-    const creator = runSession({
+    const creator = start({
       hello: "我需要向对方了解鲁越森",
       lines: lineQueue(),
       relay: relay.url,
@@ -56,7 +72,7 @@ describe("session", () => {
       signal: stop.signal,
     });
     const code = await waitForText(path.join(dir, "creator"), "waiting");
-    const joiner = runSession({
+    const joiner = start({
       code,
       lines: lineQueue(),
       relay: relay.url,
@@ -78,14 +94,14 @@ describe("session", () => {
       const relay = await startRelay();
       const creatorLines = lineQueue();
       const joinerLines = lineQueue();
-      const creator = runSession({
+      const creator = start({
         hello: "背景",
         lines: creatorLines,
         relay: relay.url,
         home: path.join(dir, "creator"),
       });
       const code = await waitForText(path.join(dir, "creator"), "waiting");
-      const joiner = runSession({ code, lines: joinerLines, relay: relay.url, home: path.join(dir, "joiner") });
+      const joiner = start({ code, lines: joinerLines, relay: relay.url, home: path.join(dir, "joiner") });
       await waitForText(path.join(dir, "joiner"), "peer hello");
       joinerLines.push("确认");
       await waitForText(path.join(dir, "creator"), "ready");
@@ -108,7 +124,7 @@ describe("session", () => {
     const dir = await mkdtemp(path.join(tmpdir(), "agenthop-session-"));
     const relay = await startRelay();
     const creatorLines = lineQueue();
-    const creator = runSession({
+    const creator = start({
       hello: "背景",
       lines: creatorLines,
       relay: relay.url,
@@ -133,7 +149,7 @@ describe("session", () => {
   it("writes peer gone instead of a raw relay error when the room disappears", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "agenthop-session-"));
     const relay = await startRelay();
-    const creator = runSession({
+    const creator = start({
       hello: "背景",
       lines: lineQueue(),
       relay: relay.url,
@@ -141,7 +157,7 @@ describe("session", () => {
       recoverMs: 300,
     });
     const code = await waitForText(path.join(dir, "creator"), "waiting");
-    const joiner = runSession({
+    const joiner = start({
       code,
       lines: lineQueue(),
       relay: relay.url,
@@ -159,7 +175,7 @@ describe("session", () => {
   it("calls the room expired, not the peer gone, when nobody ever joined", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "agenthop-session-"));
     const relay = await startRelay();
-    const creator = runSession({
+    const creator = start({
       hello: "背景",
       lines: lineQueue(),
       relay: relay.url,
@@ -179,7 +195,7 @@ describe("session", () => {
     const dir = await mkdtemp(path.join(tmpdir(), "agenthop-session-"));
     const relay = await startRelay();
     const joinerLines = lineQueue();
-    const creator = runSession({
+    const creator = start({
       hello: "背景",
       lines: lineQueue(),
       relay: relay.url,
@@ -187,7 +203,7 @@ describe("session", () => {
       recoverMs: 300,
     });
     const code = await waitForText(path.join(dir, "creator"), "waiting");
-    const joiner = runSession({
+    const joiner = start({
       code,
       lines: joinerLines,
       relay: relay.url,
@@ -208,14 +224,14 @@ describe("session", () => {
     const dir = await mkdtemp(path.join(tmpdir(), "agenthop-session-"));
     const relay = await startRelay();
     const joinerLines = lineQueue();
-    const creator = runSession({
+    const creator = start({
       hello: "背景",
       lines: lineQueue(),
       relay: relay.url,
       home: path.join(dir, "creator"),
     });
     const code = await waitForText(path.join(dir, "creator"), "waiting");
-    const joiner = runSession({ code, lines: joinerLines, relay: relay.url, home: path.join(dir, "joiner") });
+    const joiner = start({ code, lines: joinerLines, relay: relay.url, home: path.join(dir, "joiner") });
     await waitForText(path.join(dir, "joiner"), "peer hello");
     joinerLines.push("确认");
     await waitForText(path.join(dir, "creator"), "ready");
@@ -236,14 +252,14 @@ describe("session", () => {
     let relay = await startRelay({ listenPort: port });
     const creatorLines = lineQueue();
     const joinerLines = lineQueue();
-    const creator = runSession({
+    const creator = start({
       hello: "背景",
       lines: creatorLines,
       relay: relay.url,
       home: path.join(dir, "creator"),
     });
     const code = await waitForText(path.join(dir, "creator"), "waiting");
-    const joiner = runSession({ code, lines: joinerLines, relay: relay.url, home: path.join(dir, "joiner") });
+    const joiner = start({ code, lines: joinerLines, relay: relay.url, home: path.join(dir, "joiner") });
     await waitForText(path.join(dir, "joiner"), "peer hello");
     joinerLines.push("确认");
     await waitForText(path.join(dir, "creator"), "ready");
@@ -265,14 +281,14 @@ describe("session", () => {
     const relay = await startRelay();
     const creatorLines = lineQueue();
     const joinerLines = lineQueue();
-    const creator = runSession({
+    const creator = start({
       hello: "背景",
       lines: creatorLines,
       relay: relay.url,
       home: path.join(dir, "creator"),
     });
     const code = await waitForText(path.join(dir, "creator"), "waiting");
-    const joiner = runSession({ code, lines: joinerLines, relay: relay.url, home: path.join(dir, "joiner") });
+    const joiner = start({ code, lines: joinerLines, relay: relay.url, home: path.join(dir, "joiner") });
     await waitForText(path.join(dir, "joiner"), "peer hello");
     joinerLines.push("确认");
     await waitForText(path.join(dir, "creator"), "ready");
@@ -294,9 +310,9 @@ describe("session", () => {
     const creatorLines = lineQueue();
     const joinerLines = lineQueue();
     // Both sides run as the same person here, which is what put them in one file before.
-    const creator = runSession({ hello: "背景", lines: creatorLines, relay: relay.url, home });
+    const creator = start({ hello: "背景", lines: creatorLines, relay: relay.url, home });
     const code = await waitForText(home, "waiting");
-    const joiner = runSession({ code, lines: joinerLines, relay: relay.url, home });
+    const joiner = start({ code, lines: joinerLines, relay: relay.url, home });
     await waitForText(home, "peer hello");
     joinerLines.push("确认");
     await waitForText(home, "local ready");
@@ -323,6 +339,7 @@ describe("session", () => {
 async function waitForText(home: string, text: string): Promise<string> {
   const deadline = Date.now() + 20000;
   while (Date.now() < deadline) {
+    if (failures.length > 0) throw new Error(`session stopped: ${failures[0] instanceof Error ? failures[0].stack : failures[0]}`);
     let files: string[] = [];
     try {
       files = await readdir(path.join(home, "sessions"));

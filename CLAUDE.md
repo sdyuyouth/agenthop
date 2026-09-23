@@ -25,7 +25,9 @@ pnpm --filter @agenthop/relay-cf exec wrangler deploy                  # 部署�
 
 `pnpm test` 按包串行（`--workspace-concurrency=1`）。这些测试起真的 server、真的中继、真的子进程，几个包一起跑会互相抢 CPU，症状是某一行等二十秒都不出现。别为了快把并发加回来。
 
-`@agenthop/relay-cf` 的 `test` 会跑两套配置：`vitest.config.ts`（workers pool，快）和 `vitest.live.config.ts`（真的 `wrangler dev`，30s 超时）。只想要快的那套时直接 `vitest run --config vitest.config.ts`。
+`@agenthop/relay-cf` 的 `test` 会跑两套配置：`vitest.config.ts`（workers pool，快）和 `vitest.live.config.ts`（真的 `wrangler dev`，30s 超时）。只想要快的那套时直接 `vitest run --config vitest.config.ts`。live 那套在 CI 上默认跳过（要跑设 `AGENTHOP_LIVE=1`），因为它要现拉 workerd。
+
+`session.test.ts` 里的会话用 `start()` 起，它把提前失败的原因记进 `failures`，`waitForText` 会把原因抛出来——不这样的话一个早退的会话只会表现成"某一行没等到"。偶尔仍会在全量跑时看到 `waiting did not arrive`（几十次里一次，单独跑从不复现），根因未定，现在至少会报出真实原因。
 
 ## 包与依赖方向
 
@@ -74,6 +76,15 @@ tunnel ─┬─ relay-node（自建中继，ws + node:http）
 配额在 `DEFAULT_LIMITS`（8 MiB / 2000 条 / 单条正文 64 KiB），超了走 `onRefused`，不进 `Talk`。附件默认**不落盘**（`keepFiles`，`--accept-files` 打开），只把名字放进事件，session 写一行 `peer files`。
 
 `talk.test.ts` 覆盖日志顺序，`e2e.test.ts` 起真中继 + 真 host 覆盖传输层（含附件落到 `inbox/`），`session.test.ts` 用 `lineQueue` 跑完整的握手、bye、gone、input-closed。
+
+## 发版
+
+1. 改 `packages/cli/src/version.ts`，提交推送。
+2. 在 GitHub 上建 tag 为 `vX.Y.Z` 的 Release 并自己写说明。
+3. `.github/workflows/release.yml` 在 Release 发布时触发：校验 tag 与 `version.ts` 一致 → `node scripts/build-release.mjs` → 把五个程序和 `SHA256SUMS` 传上去。**不要再手工 `gh release upload`**，本地上传慢且中断过。
+4. 只有改了 `packages/relay-cf` 才需要 `wrangler deploy`。
+
+`.github/workflows/ci.yml` 在 push 和 PR 上跑 `pnpm typecheck` + `pnpm test`（Node 20 和 24）。
 
 ## 需要记住的约定
 

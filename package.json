@@ -1,6 +1,26 @@
 {
   "name": "agenthop",
+  "version": "0.3.2",
   "private": true,
+  "description": "Short-code relay so two agents on machines without public addresses can talk.",
+  "license": "Apache-2.0",
+  "author": "Cooper",
+  "homepage": "https://github.com/sdyuyouth/agenthop#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sdyuyouth/agenthop.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sdyuyouth/agenthop/issues"
+  },
+  "keywords": [
+    "agent",
+    "a2a",
+    "relay",
+    "cli",
+    "cloudflare-workers",
+    "tunnel"
+  ],
   "type": "module",
   "packageManager": "pnpm@12.4.1",
   "engines": {

@@ -1,10 +1,41 @@
 # agenthop
 
-两台没有公网地址的机器，各有一个 agent。一条命令完成配对、确认背景和后续对话。默认中继是 `https://agenthop.imatrix.tech`。
+**让两台没有公网地址的机器上的两个 agent 直接对话。** 一个短短的配对码，一条命令，完成配对、确认背景和后续往返。
 
-成品在 GitHub Release。下载对应系统的文件后安装一次，不需要克隆仓库，也不需要 Node.js。
+[![CI](https://github.com/sdyuyouth/agenthop/actions/workflows/ci.yml/badge.svg)](https://github.com/sdyuyouth/agenthop/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/sdyuyouth/agenthop)](https://github.com/sdyuyouth/agenthop/releases/latest)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-https://github.com/sdyuyouth/agenthop/releases/latest
+## 解决什么问题
+
+你在自己电脑上开着一个 agent，对方在他的电脑上开着另一个。两边都没有公网入口，想让它们交换点东西，只能靠人把上下文复制来复制去。
+
+agenthop 把这件事变成：一方创建房间拿到配对码，另一方用这个码加入，然后两个 agent 直接说话。工具调用和思考过程不过去，**过去的是一方说完的话**。
+
+## 一次真实对话长什么样
+
+下面是 Claude Code 和 grok CLI 之间一次真实对话的节选，创建方看到的内容（也是它的标准输出）：
+
+```text
+15:35:02 local waiting 0064-fresh-genre-bunt
+15:38:00 peer connected
+15:38:00 local hello 我是 Cooper 这边的 Claude Code。刚发布了 agenthop v0.3.2，想用一次真实对话验证…
+15:38:24 peer confirm 相符：我是 Cooper 本机上的 grok CLI，来配合验证 agenthop v0.3.2。
+15:38:24 local ready
+15:38:36 local say 第一个问题：你现在跑的 grok CLI 是哪个版本，用的哪个模型？
+15:39:12 peer say grok CLI 版本是 1.0.41（4220f3b224a6），这是刚才跑 grok --version 的输出。
+15:39:13 peer say 当前这次会话的模型是 grok-4.7。
+15:43:00 local bye
+15:43:02 peer bye
+```
+
+加入方那边是对称的：它看到 `peer hello`，写一句确认，之后每一句都是 `peer say`。
+
+## 安装
+
+下载对应系统的文件，安装一次。**不需要克隆仓库，也不需要 Node.js。**
+
+<https://github.com/sdyuyouth/agenthop/releases/latest>
 
 | 文件 | 系统 |
 |---|---|
@@ -16,69 +47,40 @@ https://github.com/sdyuyouth/agenthop/releases/latest
 
 没有 Windows ARM 包。
 
-## macOS
-
-Apple 芯片用 `agenthop-macos-arm64`，Intel 用 `agenthop-macos-x64`。
+**macOS / Linux**
 
 ```bash
 chmod +x agenthop-macos-arm64
 ./agenthop-macos-arm64 install --skill-dir <技能目录>
 ```
 
-Intel 把文件名换成 `agenthop-macos-x64`。命令装到 `~/.local/bin/agenthop`。新开一个终端后可以直接运行 `agenthop`。
+命令装到 `~/.local/bin/agenthop`。换成对应系统的文件名即可。
 
-会话日志在 `~/.agenthop/sessions/<配对码>.<create|join>.log`。技能副本在 `~/.agenthop/SKILL.md`。
-
-## Linux
-
-x64 用 `agenthop-linux-x64`，ARM64 用 `agenthop-linux-arm64`。
-
-```bash
-chmod +x agenthop-linux-x64
-./agenthop-linux-x64 install --skill-dir <技能目录>
-```
-
-ARM64 把文件名换成 `agenthop-linux-arm64`。命令装到 `~/.local/bin/agenthop`。新开一个终端后可以直接运行 `agenthop`。
-
-会话日志在 `~/.agenthop/sessions/<配对码>.<create|join>.log`。技能副本在 `~/.agenthop/SKILL.md`。
-
-## Windows
-
-在 PowerShell 里执行。不要用 `chmod`。
+**Windows**（在 PowerShell 里执行，不要用 `chmod`）
 
 ```powershell
 .\agenthop-windows-x64.exe install --skill-dir <技能目录>
 ```
 
-命令装到 `%LOCALAPPDATA%\agenthop\agenthop.exe`，并把这个目录写入用户 PATH。新开一个终端后可以直接运行 `agenthop`。
+命令装到 `%LOCALAPPDATA%\agenthop\agenthop.exe`，并把这个目录写入用户 PATH。
 
-会话日志在 `%USERPROFILE%\.agenthop\sessions\<配对码>.<create|join>.log`。技能副本在 `%USERPROFILE%\.agenthop\SKILL.md`。
+新开一个终端后可以直接运行 `agenthop`。`--skill-dir` 是你这个 agent 存放技能文件的目录，可以重复指定；无论是否指定，都会再写一份到 `<家目录>/.agenthop/SKILL.md`。这些目录会记在 `<家目录>/.agenthop/install.json` 里，以后 `agenthop update` 会把新的 `SKILL.md` 写回每一个。
 
-## 安装选项
-
-`--skill-dir` 可重复。每个目录写入一份 `SKILL.md`。无论是否指定，都会再写一份到家目录下的 `.agenthop/SKILL.md`。
-
-这些目录会记在 `<家目录>/.agenthop/install.json` 里。`agenthop update` 换完程序后，会用新程序把新的 `SKILL.md` 写回每一个记录过的目录——技能文本在程序里面，所以只有新程序能写出新的技能。万一写不成（从 v0.2.0 之前的版本升上来就会这样），update 会打印出需要手动执行的那行安装命令。
-
-已经安装过时：
+### 更新
 
 ```bash
-agenthop update
-agenthop update --check
-agenthop update --force
+agenthop update            # --check 只查询，--force 版本相同也重装
 ```
 
-下载回来的程序会和 release 里的 `SHA256SUMS` 对校验和，对不上就不替换现在的程序。校验和优先从 GitHub 取，取不到才退回中继那一份（并且会说明）。
+下载回来的程序会和 release 里的 `SHA256SUMS` 对校验和，对不上就不替换现在的程序。校验和优先从 GitHub 取，取不到才退回中继那一份（并且会说明）。`upgrade` 和 `self-update` 是同一条命令。
 
-`--check` 只查询，不安装。`--force` 在版本相同的时候也重新安装。`upgrade` 和 `self-update` 与 `update` 相同。v0.1.5 及更早的程序没有 `update`，先下载当前发布的文件换上。
+`agenthop --version` 打印版本，`agenthop help` 打印完整用法。
 
-`agenthop --version` 打印版本。不带参数，或执行 `agenthop help`，会打印完整用法。
+## 用法
 
-## 对话
+用一次工具调用启动命令，**让这个进程活到对话结束**。对方的话从它的标准输出读，要说的话写进同一个标准输入，一行一句。进程不会因为新消息而重新启动。
 
-用一次工具调用启动命令，让这个进程活到对话结束。对方的话从它的标准输出读，要说的话写进同一个标准输入，一行一句。进程不会因为新消息而重新启动。
-
-创建房间。后面的文字是任务背景，会作为 hello 发出：
+创建房间，后面的文字是任务背景，会作为 hello 发给对方：
 
 ```bash
 agenthop "<任务背景>"
@@ -92,55 +94,97 @@ agenthop <配对码>
 
 配对码不区分大小写，用空格或连字符隔开都行。
 
-标准输出出现 `peer hello` 后，由当前 agent 判断背景是否属实。属实就把确认写进标准输入，创建方随后输出 `ready`。不属实就询问用户，并且不写标准输入。
+加入方读到 `peer hello` 后，由那边的 agent 判断这段背景是否和自己的上下文相符：相符就写一句确认，创建方随后输出 `ready`；不相符就去问用户，不要往标准输入写东西。`ready` 之后，对方的每一句都是 `peer say`。
 
-`ready` 之后，对方的新一句是 `peer say`。当前 agent 把回复写进标准输入。
+写一行 `/bye` 结束对话。对方会把 bye 说回来，两边各有 `local bye` 和 `peer bye`，然后各自退出。读到 `peer bye` 不用管，程序自己会回。按 Ctrl-C 也会先送出 bye 再退出。
 
-写一行 `/bye` 结束对话。对方会把 bye 说回来，两边各有 `local bye` 和 `peer bye` 两行，然后各自退出。读到 `peer bye` 不用管，程序会自己回复。按 Ctrl-C 也会先送出 bye 再退出。
+这个进程写出的每一行就是对话本身，**要出现在用户看得到的地方**。另存一份可以，但要同时告诉用户文件的绝对路径和查看命令。判断标准只有一个：用户此刻能不能看到对话在往前走。
 
-连接断了会写 `local reconnecting`，用同一个配对码接回来之后写 `local reconnected`，对话继续。送不出去的话会写成 `local undelivered <正文>`，不会悄悄消失。对方不在了是 `peer gone`；一直没人加入、房间过期是 `local expired`。
+### 日志与状态
 
-`peer refused` 表示这一句既没有进入对话，也没有落到磁盘：可能是第三个人拿着同一个配对码，也可能是这次会话的用量到了上限（总量 8 MiB、2000 条、单条正文 64 KiB）。对方带附件时写 `peer files`，**默认只记名字不保存**，要保存加 `--accept-files`。中继那边对同一个房间的写入也限到每分钟 60 条，读取不计。
-
-标准输出就是对话过程，要出现在用户看得到的地方。另存一份可以，但要同时告诉用户文件的绝对路径和查看命令：macOS 与 Linux 用 `tail -f <程序打印的那个路径>`，Windows PowerShell 用 `Get-Content -Wait -Tail 30 <程序打印的那个路径>`。判断标准只有一个：用户此刻能不能看到对话在往前走。
-
-启动后的第一行是日志的绝对路径（`local log <路径>`）。日志按房间和哪一端命名：创建方 `<配对码>.create.log`，加入方 `<配对码>.join.log`，两端在同一台机器上也不会写进同一个文件。
-
-日志每行的格式是：
+启动后的第一行是日志的绝对路径（`local log <路径>`）。日志按房间和哪一端命名：创建方 `<配对码>.create.log`，加入方 `<配对码>.join.log`，都在 `<家目录>/.agenthop/sessions/`，两端在同一台机器上也不会写进同一个文件。内容和标准输出一样：
 
 ```text
 <时间> <local|peer> <状态> <正文>
 ```
 
-状态依次是 `log`、`waiting`、`connected`、`hello`、`confirm`、`ready`、`say`，结束时是 `bye`、`gone` 或 `expired`；中途还可能出现 `reconnecting`、`reconnected`、`undelivered`、`refused`、`files`、`input-closed`。时间是本机时间，带时区偏移。
+时间是本机时间，带时区偏移。`local` 恒指自己，`peer` 恒指对方。
 
-换中继：
+| 状态 | 意思 |
+|---|---|
+| `log` `waiting` `connected` `hello` `confirm` `ready` | 配对过程 |
+| `say` | 对话正文 |
+| `bye` | 结束，两边都会出现 |
+| `reconnecting` `reconnected` | 连接断了，正在用同一个配对码把房间接回来；接回来后对话继续 |
+| `undelivered` | 这一句**没有送到对方**，不要当成已经回复过 |
+| `gone` | 对方不在了（退出、断网，或房间空闲超过十分钟） |
+| `expired` | 一直没有人用这个配对码加入，房间过期了 |
+| `refused` | 这一句既没进对话也没落盘：第三个人拿着同一个配对码，或者用量到了上限 |
+| `files` | 对方带了附件，默认只记名字不保存，要保存加 `--accept-files` |
+| `input-closed` | 自己的标准输入被关掉了，只能收听 |
+
+## 工作原理
+
+```
+你的机器                        中继                        对方的机器
+agenthop ──WebSocket──▶  /host/<配对码>  ◀──HTTP──  agenthop
+   │                     （只转发字节）                        │
+   └─ 本地 A2A server                                          └─ 轮询房间读增量
+```
+
+创建方在本机起一个 [A2A](https://a2a-protocol.org/latest/specification/) server，并用一条 WebSocket 连到中继；对方发往 `/r/<配对码>/...` 的 HTTP 经这条隧道落到本机。中继只转发字节，不解析消息。房间在十分钟没有转发后消失，所以配对码要在十分钟内用掉。
+
+隧道的帧格式、房间与限流规则写在 [SPEC.md](SPEC.md)。
+
+### 包
+
+| 包 | 作用 |
+|---|---|
+| `@agenthop/cli` | `agenthop` 命令本身：配对、对话、安装、更新 |
+| `@agenthop/tunnel` | 隧道与房间逻辑，两个中继共用 |
+| `@agenthop/relay-node` | 自建中继（`agenthop relay`） |
+| `@agenthop/relay-cf` | Cloudflare Workers 中继，每个房间一个 Durable Object |
+| `@agenthop/agent` | A2A 消息与附件的编解码 |
+
+## 中继
+
+默认是 `https://agenthop.imatrix.tech`。换中继用 `--relay URL` 或环境变量 `AGENTHOP_RELAY`：
 
 ```bash
 agenthop --relay https://example.test "<任务背景>"
 ```
 
-也可以设置环境变量 `AGENTHOP_RELAY`。自建中继并且设置了密码时，两边都加上 `--pass <密码>`，或者设环境变量 `AGENTHOP_PASS`——命令行参数会出现在 `ps` 里，环境变量不会。
-
-## 自建中继
+自建一个：
 
 ```bash
 agenthop relay --listen 127.0.0.1:8787 --pass secret
 ```
 
-两边使用：
-
-```bash
-agenthop --relay http://127.0.0.1:8787 --pass secret "<任务背景>"
-```
-
-Workers 中继的部署在 `packages/relay-cf`：
+两边都加 `--pass secret`，或者设环境变量 `AGENTHOP_PASS`——命令行参数会出现在 `ps` 里，环境变量不会。Workers 中继的部署在 `packages/relay-cf`：
 
 ```bash
 pnpm --filter @agenthop/relay-cf exec wrangler deploy
 pnpm --filter @agenthop/relay-cf exec wrangler secret put RELAY_PASS
 ```
 
-房间在 10 分钟没有转发后消失，所以配对码要在十分钟内用掉。连接中途断开时，创建方会用同一个配对码把房间接回来。短码就是进入这个房间的凭证。使用 Cloudflare 上的中继时，TLS 在 Cloudflare 终结，中继可以读到消息正文。这一版没有端到端加密。
+## 安全
 
-隧道格式见 [SPEC.md](SPEC.md)。
+配对码就是进入房间的唯一凭证，它是一次性的。使用托管中继时 TLS 在 Cloudflare 终结，**这一版没有端到端加密**，中继在技术上可以读到消息正文。详见 [SECURITY.md](SECURITY.md)。
+
+## 开发
+
+```bash
+node scripts/setup.mjs   # 装依赖并把 dev launcher 链到 PATH
+pnpm typecheck
+pnpm test
+```
+
+细节见 [CONTRIBUTING.md](CONTRIBUTING.md)，架构说明见 [CLAUDE.md](CLAUDE.md)，版本变化见 [CHANGELOG.md](CHANGELOG.md)。
+
+## 许可证
+
+[Apache-2.0](LICENSE)
+
+---
+
+**In English:** agenthop lets two agents on machines without public addresses talk to each other. One side runs `agenthop "<background>"` and gets a short pairing code; the other runs `agenthop <code>`. A relay forwards bytes between them — the messages themselves are [A2A](https://a2a-protocol.org/latest/specification/) JSON-RPC and the relay does not parse them. The tunnel format, room lifetime and rate limits are specified in [SPEC.md](SPEC.md), which is in English. Note that the hosted relay terminates TLS and this version has no end-to-end encryption.
