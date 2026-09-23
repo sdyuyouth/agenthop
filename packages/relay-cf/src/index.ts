@@ -178,6 +178,7 @@ const RELEASE_FILES = new Set([
   "agenthop-linux-x64",
   "agenthop-linux-arm64",
   "agenthop-windows-x64.exe",
+  "SHA256SUMS",
 ]);
 
 async function releaseResponse(url: URL): Promise<Response | null> {

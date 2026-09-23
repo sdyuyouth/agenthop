@@ -68,6 +68,8 @@ agenthop update --check
 agenthop update --force
 ```
 
+下载回来的程序会和 release 里的 `SHA256SUMS` 对校验和，对不上就不替换现在的程序。校验和优先从 GitHub 取，取不到才退回中继那一份（并且会说明）。
+
 `--check` 只查询，不安装。`--force` 在版本相同的时候也重新安装。`upgrade` 和 `self-update` 与 `update` 相同。v0.1.5 及更早的程序没有 `update`，先下载当前发布的文件换上。
 
 `agenthop --version` 打印版本。不带参数，或执行 `agenthop help`，会打印完整用法。
@@ -94,7 +96,9 @@ agenthop <配对码>
 
 `ready` 之后，对方的新一句是 `peer say`。当前 agent 把回复写进标准输入。
 
-写一行 `/bye` 结束对话。对方会把 bye 说回来，两边各有 `local bye` 和 `peer bye` 两行，然后各自退出。读到 `peer bye` 不用管，程序会自己回复。对方掉线、房间过期，或者说了 bye 却没等到回应时，会写出一行 `peer gone`。
+写一行 `/bye` 结束对话。对方会把 bye 说回来，两边各有 `local bye` 和 `peer bye` 两行，然后各自退出。读到 `peer bye` 不用管，程序会自己回复。按 Ctrl-C 也会先送出 bye 再退出。
+
+连接断了会写 `local reconnecting`，用同一个配对码接回来之后写 `local reconnected`，对话继续。送不出去的话会写成 `local undelivered <正文>`，不会悄悄消失。对方不在了是 `peer gone`；一直没人加入、房间过期是 `local expired`；第三个人拿着同一个配对码说话是 `peer refused`。
 
 标准输出就是对话过程，要出现在用户看得到的地方。另存一份可以，但要同时告诉用户文件的绝对路径和查看命令：macOS 与 Linux 用 `tail -f ~/.agenthop/sessions/<配对码>.log`，Windows PowerShell 用 `Get-Content -Wait -Tail 30 $env:USERPROFILE\.agenthop\sessions\<配对码>.log`。判断标准只有一个：用户此刻能不能看到对话在往前走。
 
@@ -104,7 +108,7 @@ agenthop <配对码>
 <时间> <local|peer> <状态> <正文>
 ```
 
-状态依次是 `waiting`、`connected`、`hello`、`confirm`、`ready`、`say`，结束时是 `bye` 或 `gone`。
+状态依次是 `waiting`、`connected`、`hello`、`confirm`、`ready`、`say`，结束时是 `bye`、`gone` 或 `expired`；中途还可能出现 `reconnecting`、`reconnected`、`undelivered`、`refused`、`input-closed`。时间是本机时间，带时区偏移。
 
 换中继：
 
@@ -133,6 +137,6 @@ pnpm --filter @agenthop/relay-cf exec wrangler deploy
 pnpm --filter @agenthop/relay-cf exec wrangler secret put RELAY_PASS
 ```
 
-房间在 10 分钟没有转发后消失。短码就是进入这个房间的凭证。使用 Cloudflare 上的中继时，TLS 在 Cloudflare 终结，中继可以读到消息正文。这一版没有端到端加密。
+房间在 10 分钟没有转发后消失，所以配对码要在十分钟内用掉。连接中途断开时，创建方会用同一个配对码把房间接回来。短码就是进入这个房间的凭证。使用 Cloudflare 上的中继时，TLS 在 Cloudflare 终结，中继可以读到消息正文。这一版没有端到端加密。
 
 隧道格式见 [SPEC.md](SPEC.md)。

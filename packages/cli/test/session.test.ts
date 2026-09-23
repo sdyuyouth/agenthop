@@ -31,7 +31,7 @@ describe("session", () => {
     await waitForText(path.join(dir, "joiner"), "peer hello 我需要向对方了解鲁越森");
     joinerLines.push("确认建立通道");
     await waitForText(path.join(dir, "creator"), "ready");
-    await sendMessage({ code, text: sayWire("近况如何"), relay: relay.url });
+    await sendMessage({ code, text: sayWire(undefined, "近况如何"), relay: relay.url });
     await waitForText(path.join(dir, "creator"), "peer say 近况如何");
     creatorLines.push("下一句");
     await waitForText(path.join(dir, "creator"), "local say 下一句");
@@ -138,6 +138,7 @@ describe("session", () => {
       lines: lineQueue(),
       relay: relay.url,
       home: path.join(dir, "creator"),
+      recoverMs: 300,
     });
     const code = await waitForText(path.join(dir, "creator"), "waiting");
     const joiner = runSession({
@@ -145,7 +146,7 @@ describe("session", () => {
       lines: lineQueue(),
       relay: relay.url,
       home: path.join(dir, "joiner"),
-      goneAfterMs: 300,
+      recoverMs: 300,
     });
     await waitForText(path.join(dir, "joiner"), "peer hello");
 
@@ -153,6 +154,110 @@ describe("session", () => {
     await waitForText(path.join(dir, "joiner"), "peer gone");
     await waitForText(path.join(dir, "creator"), "peer gone");
     await Promise.all([creator, joiner]);
+  });
+
+  it("calls the room expired, not the peer gone, when nobody ever joined", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "agenthop-session-"));
+    const relay = await startRelay();
+    const creator = runSession({
+      hello: "背景",
+      lines: lineQueue(),
+      relay: relay.url,
+      home: path.join(dir, "creator"),
+      recoverMs: 300,
+    });
+    const code = await waitForText(path.join(dir, "creator"), "waiting");
+    await relay.close();
+    await waitForText(path.join(dir, "creator"), "local expired");
+    await creator;
+    const log = await readFile(sessionPath(path.join(dir, "creator"), code), "utf8");
+    expect(log).not.toContain("peer gone");
+    expect(log).toContain("配对码");
+  });
+
+  it("writes down what it could not send instead of losing it", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "agenthop-session-"));
+    const relay = await startRelay();
+    const joinerLines = lineQueue();
+    const creator = runSession({
+      hello: "背景",
+      lines: lineQueue(),
+      relay: relay.url,
+      home: path.join(dir, "creator"),
+      recoverMs: 300,
+    });
+    const code = await waitForText(path.join(dir, "creator"), "waiting");
+    const joiner = runSession({
+      code,
+      lines: joinerLines,
+      relay: relay.url,
+      home: path.join(dir, "joiner"),
+      recoverMs: 300,
+    });
+    await waitForText(path.join(dir, "joiner"), "peer hello");
+    joinerLines.push("确认");
+    await waitForText(path.join(dir, "creator"), "ready");
+
+    await relay.close();
+    joinerLines.push("这句发不出去了");
+    await waitForText(path.join(dir, "joiner"), "local undelivered 这句发不出去了");
+    await Promise.all([creator, joiner]);
+  });
+
+  it("ignores a third person holding the same code", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "agenthop-session-"));
+    const relay = await startRelay();
+    const joinerLines = lineQueue();
+    const creator = runSession({
+      hello: "背景",
+      lines: lineQueue(),
+      relay: relay.url,
+      home: path.join(dir, "creator"),
+    });
+    const code = await waitForText(path.join(dir, "creator"), "waiting");
+    const joiner = runSession({ code, lines: joinerLines, relay: relay.url, home: path.join(dir, "joiner") });
+    await waitForText(path.join(dir, "joiner"), "peer hello");
+    joinerLines.push("确认");
+    await waitForText(path.join(dir, "creator"), "ready");
+
+    await sendMessage({ code, text: "[[agenthop:say:stranger]] 我是第三个人", relay: relay.url });
+    await waitForText(path.join(dir, "creator"), "peer refused");
+    const log = await readFile(sessionPath(path.join(dir, "creator"), code), "utf8");
+    expect(log).not.toContain("peer say 我是第三个人");
+
+    joinerLines.push("/bye");
+    await Promise.all([creator, joiner]);
+    await relay.close();
+  });
+
+  it("puts the room back on the same code after the relay comes back", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "agenthop-session-"));
+    const port = 8399;
+    let relay = await startRelay({ listenPort: port });
+    const creatorLines = lineQueue();
+    const joinerLines = lineQueue();
+    const creator = runSession({
+      hello: "背景",
+      lines: creatorLines,
+      relay: relay.url,
+      home: path.join(dir, "creator"),
+    });
+    const code = await waitForText(path.join(dir, "creator"), "waiting");
+    const joiner = runSession({ code, lines: joinerLines, relay: relay.url, home: path.join(dir, "joiner") });
+    await waitForText(path.join(dir, "joiner"), "peer hello");
+    joinerLines.push("确认");
+    await waitForText(path.join(dir, "creator"), "ready");
+
+    await relay.close();
+    await waitForText(path.join(dir, "creator"), "local reconnecting");
+    relay = await startRelay({ listenPort: port });
+    await waitForText(path.join(dir, "creator"), "local reconnected");
+
+    creatorLines.push("断线之后的一句");
+    await waitForText(path.join(dir, "joiner"), "peer say 断线之后的一句");
+    creatorLines.push("/bye");
+    await Promise.all([creator, joiner]);
+    await relay.close();
   });
 
   it("says so when its own standard input is closed, and keeps listening", async () => {
@@ -174,7 +279,7 @@ describe("session", () => {
 
     creatorLines.end();
     await waitForText(path.join(dir, "creator"), "local input-closed");
-    await sendMessage({ code, text: sayWire("还在听吗"), relay: relay.url });
+    await sendMessage({ code, text: sayWire(undefined, "还在听吗"), relay: relay.url });
     await waitForText(path.join(dir, "creator"), "peer say 还在听吗");
 
     joinerLines.push("/bye");

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,3 +25,10 @@ for (const [target, name] of targets) {
   );
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
+
+// `agenthop update` refuses a program whose hash is not in here.
+const sums = targets
+  .map(([, name]) => `${createHash("sha256").update(readFileSync(join(root, "dist", name))).digest("hex")}  ${name}`)
+  .join("\n");
+writeFileSync(join(root, "dist", "SHA256SUMS"), `${sums}\n`);
+console.log(sums);

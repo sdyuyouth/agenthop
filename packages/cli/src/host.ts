@@ -10,8 +10,12 @@ import { WebSocket } from "ws";
 import { HostBridge } from "./bridge.js";
 import { listenControl, Room } from "./room.js";
 import { type SessionEvent } from "./talk.js";
+import { version } from "./version.js";
 
 export const DEFAULT_RELAY = "https://agenthop.imatrix.tech";
+
+/** How long a dropped room keeps being reopened before the conversation is called off. */
+export const RECOVER_MS = 45_000;
 
 export type HostOptions = {
   relay?: string;
@@ -19,8 +23,13 @@ export type HostOptions = {
   code?: string;
   home?: string;
   onEvent?: (event: SessionEvent) => void;
-  /** The relay dropped the room: the socket closed, or it was never able to stay open. */
+  /** The socket dropped and the room is being reopened with the same code. */
+  onReconnecting?: (reason: string) => void;
+  onReconnected?: () => void;
+  /** Reopening failed for long enough to give up. */
   onGone?: (reason: string) => void;
+  /** How long to keep reopening the room before giving up. */
+  recoverMs?: number;
 };
 
 export type RunningHost = {
@@ -47,56 +56,95 @@ export async function startHost(options: HostOptions = {}): Promise<RunningHost>
   app.use(`/${AGENT_CARD_PATH}`, agentCardHandler({ agentCardProvider: handler }));
   app.use(jsonRpcHandler({ requestHandler: handler, userBuilder: UserBuilder.noAuthentication }));
 
-  const ws = new WebSocket(hostUrl, {
-    headers: options.pass ? { authorization: `Bearer ${options.pass}` } : undefined,
-  });
-  const bridge = new HostBridge(localUrl.url, (frame) => {
-    if (ws.readyState === WebSocket.OPEN) ws.send(frame);
-  });
-  ws.on("message", (data, isBinary) => {
-    if (!isBinary) return;
-    bridge.onFrame(new Uint8Array(data as Buffer));
-  });
-  await new Promise<void>((resolve, reject) => {
-    ws.once("open", () => resolve());
-    ws.once("error", (error) => reject(relayError(error, relay)));
-  });
-  const ready = new Promise<string>((resolve, reject) => {
-    ws.once("message", (data, isBinary) => {
-      if (isBinary) {
-        reject(new Error("expected ready"));
-        return;
-      }
-      const controlMessage = decodeControl(data.toString());
-      if (controlMessage.type === "error") reject(new Error(openError(controlMessage.code)));
-      else if (controlMessage.type === "ready") resolve(controlMessage.publicBase);
-      else reject(new Error("bad_control"));
-    });
-  });
-  ws.send(JSON.stringify({ v: 1, type: "open", code }));
-  const url = await ready;
-
+  let socket: WebSocket | undefined;
   let closing = false;
-  ws.on("close", () => {
-    if (!closing) options.onGone?.("中继连接断开，房间已经不在了");
+  const bridge = new HostBridge(localUrl.url, (frame) => {
+    if (socket?.readyState === WebSocket.OPEN) socket.send(frame);
   });
+
+  /** Open the room. The code stays the same, so reopening it puts the conversation back. */
+  async function openRoom(): Promise<{ ws: WebSocket; url: string }> {
+    const ws = new WebSocket(hostUrl, {
+      headers: options.pass ? { authorization: `Bearer ${options.pass}` } : undefined,
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        ws.once("open", () => resolve());
+        ws.once("error", (error) => reject(relayError(error, relay)));
+      });
+      const ready = new Promise<string>((resolve, reject) => {
+        ws.once("message", (data, isBinary) => {
+          if (isBinary) {
+            reject(new Error("expected ready"));
+            return;
+          }
+          const controlMessage = decodeControl(data.toString());
+          if (controlMessage.type === "error") reject(new Error(openError(controlMessage.code)));
+          else if (controlMessage.type === "ready") resolve(controlMessage.publicBase);
+          else reject(new Error("bad_control"));
+        });
+      });
+      ws.send(JSON.stringify({ v: 1, type: "open", code }));
+      const opened = await ready;
+      ws.on("message", (data, isBinary) => {
+        if (!isBinary) return;
+        bridge.onFrame(new Uint8Array(data as Buffer));
+      });
+      ws.on("close", () => {
+        if (socket === ws && !closing) void recover("中继连接断开");
+      });
+      return { ws, url: opened };
+    } catch (error) {
+      ws.terminate();
+      throw error;
+    }
+  }
+
+  /** Keep trying to put the room back, so a blip is not the end of the conversation. */
+  async function recover(reason: string): Promise<void> {
+    socket = undefined;
+    options.onReconnecting?.(reason);
+    const deadline = Date.now() + (options.recoverMs ?? RECOVER_MS);
+    let wait = 500;
+    while (!closing && Date.now() < deadline) {
+      await delay(wait);
+      if (closing) return;
+      try {
+        const next = await openRoom();
+        socket = next.ws;
+        options.onReconnected?.();
+        return;
+      } catch {
+        wait = Math.min(wait * 2, 5000);
+      }
+    }
+    if (!closing) options.onGone?.(`${reason}，${Math.round((options.recoverMs ?? RECOVER_MS) / 1000)} 秒内没能把房间接回来`);
+  }
+
+  const first = await openRoom();
+  socket = first.ws;
 
   return {
     code,
-    url,
+    url: first.url,
     controlUrl: control.url,
     close: async () => {
       closing = true;
-      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+      const open = socket;
+      if (open && (open.readyState === WebSocket.OPEN || open.readyState === WebSocket.CONNECTING)) {
         await new Promise<void>((resolve) => {
-          ws.once("close", () => resolve());
-          ws.close();
+          open.once("close", () => resolve());
+          open.close();
         });
       }
       await control.close();
       await new Promise<void>((resolve, reject) => localUrl.server.close((error) => (error ? reject(error) : resolve())));
     },
   };
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function relayError(error: unknown, relay: string): Error {
@@ -115,7 +163,7 @@ function agentCard(localUrl: string): AgentCard {
   return {
     name: "agenthop",
     description: "Carries one conversation between two agents, in order.",
-    version: "0.2.0",
+    version,
     provider: undefined,
     supportedInterfaces: [
       {

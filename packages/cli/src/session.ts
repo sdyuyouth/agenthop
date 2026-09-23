@@ -3,15 +3,12 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
 import { readQueue, roomBase, sendMessage } from "./send.js";
-import { startHost, type RunningHost } from "./host.js";
+import { RECOVER_MS, startHost, type RunningHost } from "./host.js";
 import { type SessionEvent } from "./talk.js";
 
-const CONNECT = "[[agenthop:connect]]";
 /** Written on stdin to end the conversation on purpose. */
 export const BYE = "/bye";
 
-/** How long the joining side keeps retrying the relay before it calls the room gone. */
-const GONE_AFTER_MS = 15_000;
 const LOCAL_POLL_MS = 200;
 const RELAY_POLL_MS = 1000;
 /** After answering a goodbye the room stays open this long, so the other side can still read it. */
@@ -29,8 +26,8 @@ export type SessionOptions = {
   pass?: string;
   home?: string;
   signal?: AbortSignal;
-  /** How long the joining side retries a failing relay before it writes `peer gone`. */
-  goneAfterMs?: number;
+  /** How long a side keeps trying to reach the room before it calls the conversation off. */
+  recoverMs?: number;
   /** How long to wait for the other side to say goodbye back. */
   byeWaitMs?: number;
 };
@@ -65,58 +62,81 @@ export async function runSession(options: SessionOptions): Promise<void> {
 async function createSession(options: SessionOptions, home: string): Promise<void> {
   const hello = options.hello?.trim() ?? "";
   if (!hello) throw new Error("usage: agenthop <任务背景>");
-  let gone = "";
+  let lost = "";
+  const logFile = () => sessionPath(home, host.code);
   const host = await startHost({
     relay: options.relay,
     pass: options.pass,
     home,
+    recoverMs: options.recoverMs,
+    onReconnecting: (reason) => write(logFile(), "local", "reconnecting", `${reason}，正在用同一个配对码把房间接回来`),
+    onReconnected: () => write(logFile(), "local", "reconnected", "房间接回来了，对话可以继续"),
     onGone: (reason) => {
-      gone = reason;
+      lost = reason;
     },
   });
-  const logFile = sessionPath(home, host.code);
-  write(logFile, "local", "waiting", host.code);
-  const out = outbox(options.lines!, logFile);
+  const log = logFile();
+  write(log, "local", "waiting", host.code);
+  const say = (wire: string) => sayLocal(host, wire);
+  const out = outbox(options.lines!, log);
   let after = 0;
   let saidBye = 0;
+  let peerId: string | undefined;
   let phase: "wait-connect" | "wait-confirm" | "ready" = "wait-connect";
   try {
-    while (!options.signal?.aborted) {
-      if (gone) {
-        write(logFile, "peer", "gone", gone);
+    for (;;) {
+      if (options.signal?.aborted) {
+        await farewell(say, out, log, phase === "ready" && !saidBye, LINGER_MS);
+        return;
+      }
+      if (lost) {
+        out.reportUnsent();
+        if (phase === "wait-connect") {
+          write(log, "local", "expired", `没有人用这个配对码加入，房间已经过期（${lost}）。重新执行 agenthop "<任务背景>" 拿一个新配对码。`);
+        } else {
+          write(log, "peer", "gone", lost);
+        }
         return;
       }
       for (const event of await pollLocal(host, after)) {
         after = event.seq;
         if (event.from !== "peer") continue;
         const wire = parseWire(event.text);
+        if (peerId !== undefined && peerId !== "" && wire.id && wire.id !== peerId) {
+          write(log, "peer", "refused", `另一个人拿着同一个配对码说话，已经忽略：${wire.text || wire.kind}`);
+          continue;
+        }
         if (wire.kind === "bye") {
-          write(logFile, "peer", "bye", wire.text);
+          write(log, "peer", "bye", wire.text);
+          out.reportUnsent();
           if (saidBye) return;
-          await sayLocal(host, byeWire());
-          write(logFile, "local", "bye");
+          await say(byeWire());
+          write(log, "local", "bye");
           // The other side reads the room over the relay, so keep it open long enough to be read.
           await delay(LINGER_MS);
           return;
         }
         if (phase === "wait-connect" && wire.kind === "connect") {
-          write(logFile, "peer", "connected");
-          await sayLocal(host, helloWire(hello));
-          write(logFile, "local", "hello", hello);
+          peerId = wire.id;
+          write(log, "peer", "connected");
+          await say(helloWire(hello));
+          write(log, "local", "hello", hello);
           phase = "wait-confirm";
         } else if (phase === "wait-confirm" && wire.kind === "confirm") {
-          write(logFile, "peer", "confirm", wire.text);
-          write(logFile, "local", "ready");
+          write(log, "peer", "confirm", wire.text);
+          write(log, "local", "ready");
           phase = "ready";
         } else if (phase === "ready" && wire.kind === "say") {
-          write(logFile, "peer", "say", wire.text);
+          write(log, "peer", "say", wire.text);
+        } else if (wire.kind === "connect") {
+          write(log, "peer", "refused", "另一个人拿着同一个配对码想加入，已经忽略");
         } else if (wire.kind === "other") {
-          write(logFile, "peer", "other", wire.text);
+          write(log, "peer", "other", wire.text);
         }
       }
-      if (!saidBye && phase === "ready" && (await out.flush((text) => sayLocal(host, text)))) saidBye = Date.now();
+      if (!saidBye && phase === "ready" && (await out.flush(say))) saidBye = Date.now();
       if (saidBye && Date.now() - saidBye > (options.byeWaitMs ?? BYE_WAIT_MS)) {
-        write(logFile, "peer", "gone", "对方没有把告别说回来");
+        write(log, "peer", "gone", "对方没有把告别说回来");
         return;
       }
       await delay(LOCAL_POLL_MS);
@@ -128,30 +148,40 @@ async function createSession(options: SessionOptions, home: string): Promise<voi
 
 async function joinSession(options: SessionOptions, home: string): Promise<void> {
   const code = options.code ?? "";
-  const logFile = sessionPath(home, code);
+  const log = sessionPath(home, code);
+  const id = randomUUID().slice(0, 8);
   const send = (text: string) => sendMessage({ code, text, relay: options.relay, pass: options.pass });
   try {
-    await send(CONNECT);
+    await send(connectWire(id));
   } catch (error) {
     throw new Error(joinFailure(error));
   }
-  write(logFile, "local", "connected");
-  const out = outbox(options.lines!, logFile);
+  write(log, "local", "connected");
+  const out = outbox(options.lines!, log);
   const base = roomBase(options.relay, code);
   let after = 0;
   let failingSince = 0;
   let saidBye = 0;
   let phase: "wait-hello" | "wait-confirm" | "ready" = "wait-hello";
   const early: string[] = [];
-  while (!options.signal?.aborted) {
+  for (;;) {
+    if (options.signal?.aborted) {
+      await farewell(send, out, log, phase === "ready" && !saidBye, 0);
+      return;
+    }
     let events: SessionEvent[];
     try {
       events = (await readQueue(base, after, options.pass)).events;
+      if (failingSince) write(log, "local", "reconnected", "又能读到房间了，对话可以继续");
       failingSince = 0;
     } catch {
-      failingSince = failingSince || Date.now();
-      if (Date.now() - failingSince > (options.goneAfterMs ?? GONE_AFTER_MS)) {
-        write(logFile, "peer", "gone", "房间已经不在了，对方可能已经退出，或者房间空闲超过十分钟");
+      if (!failingSince) {
+        failingSince = Date.now();
+        write(log, "local", "reconnecting", "读不到房间了，正在重试");
+      }
+      if (Date.now() - failingSince > (options.recoverMs ?? RECOVER_MS)) {
+        out.reportUnsent();
+        write(log, "peer", "gone", "房间已经不在了，对方可能已经退出，或者房间空闲超过十分钟");
         return;
       }
       await delay(RELAY_POLL_MS);
@@ -162,19 +192,20 @@ async function joinSession(options: SessionOptions, home: string): Promise<void>
       if (event.from !== "host") continue;
       const wire = parseWire(event.text);
       if (wire.kind === "bye") {
-        write(logFile, "peer", "bye", wire.text);
+        write(log, "peer", "bye", wire.text);
+        out.reportUnsent();
         if (saidBye) return;
-        await send(byeWire());
-        write(logFile, "local", "bye");
+        await send(byeWire(id));
+        write(log, "local", "bye");
         return;
       }
       if (phase === "wait-hello" && wire.kind === "hello") {
-        write(logFile, "peer", "hello", wire.text);
+        write(log, "peer", "hello", wire.text);
         phase = "wait-confirm";
       } else if (phase === "ready" && wire.kind === "say") {
-        write(logFile, "peer", "say", wire.text);
+        write(log, "peer", "say", wire.text);
       } else if (wire.kind === "other") {
-        write(logFile, "peer", "other", wire.text);
+        write(log, "peer", "other", wire.text);
       }
     }
     const typed = options.lines!.take();
@@ -183,39 +214,50 @@ async function joinSession(options: SessionOptions, home: string): Promise<void>
     if (phase === "wait-confirm" && typed.length > 0) {
       const reply = typed.shift() ?? "";
       if (reply === BYE) {
-        await send(byeWire());
-        write(logFile, "local", "bye");
+        await send(byeWire(id));
+        write(log, "local", "bye");
         saidBye = Date.now();
-        await delay(RELAY_POLL_MS);
-        continue;
+      } else {
+        await send(confirmWire(id, reply));
+        write(log, "local", "confirm", reply);
+        write(log, "local", "ready");
+        phase = "ready";
       }
-      await send(confirmWire(reply));
-      write(logFile, "local", "confirm", reply);
-      write(logFile, "local", "ready");
-      phase = "ready";
     }
-    if (!saidBye && phase === "ready" && (await out.flush(send, typed))) saidBye = Date.now();
+    if (!saidBye && phase === "ready" && (await out.flush((wire) => send(wire), typed, id))) saidBye = Date.now();
     if (saidBye && Date.now() - saidBye > (options.byeWaitMs ?? BYE_WAIT_MS)) {
-      write(logFile, "peer", "gone", "对方没有把告别说回来");
+      write(log, "peer", "gone", "对方没有把告别说回来");
       return;
     }
     await delay(RELAY_POLL_MS);
   }
 }
 
-/** Turns stdin lines into what goes out. Returns true once this side has said goodbye. */
-function outbox(lines: LineSource, logFile: string): { flush(send: (wire: string) => Promise<unknown>, queued?: string[]): Promise<boolean> } {
+type Outbox = {
+  flush(send: (wire: string) => Promise<unknown>, queued?: string[], id?: string): Promise<boolean>;
+  reportUnsent(): void;
+};
+
+/**
+ * Turns stdin lines into what goes out. A line that cannot be sent is written down as
+ * `undelivered` instead of disappearing, so nobody believes they answered when they did not.
+ */
+function outbox(lines: LineSource, logFile: string): Outbox {
   let noted = false;
   return {
-    async flush(send, queued) {
-      for (const text of [...(queued ?? []), ...lines.take()]) {
-        if (text === BYE) {
-          await send(byeWire());
-          write(logFile, "local", "bye");
-          return true;
+    async flush(send, queued, id) {
+      const texts = [...(queued ?? []), ...lines.take()];
+      for (let i = 0; i < texts.length; i++) {
+        const text = texts[i] ?? "";
+        const bye = text === BYE;
+        try {
+          await send(bye ? byeWire(id) : sayWire(id, text));
+        } catch {
+          for (const missed of texts.slice(i)) write(logFile, "local", "undelivered", missed);
+          return false;
         }
-        await send(sayWire(text));
-        write(logFile, "local", "say", text);
+        write(logFile, "local", bye ? "bye" : "say", bye ? "" : text);
+        if (bye) return true;
       }
       if (lines.ended() && !noted) {
         noted = true;
@@ -223,7 +265,29 @@ function outbox(lines: LineSource, logFile: string): { flush(send: (wire: string
       }
       return false;
     },
+    reportUnsent() {
+      for (const text of lines.take()) write(logFile, "local", "undelivered", text);
+    },
   };
+}
+
+/** Ctrl-C still owes the other side a goodbye. */
+async function farewell(
+  send: (wire: string) => Promise<unknown>,
+  out: Outbox,
+  logFile: string,
+  owed: boolean,
+  linger: number,
+): Promise<void> {
+  out.reportUnsent();
+  if (!owed) return;
+  try {
+    await send(byeWire());
+    write(logFile, "local", "bye");
+    if (linger) await delay(linger);
+  } catch {
+    write(logFile, "local", "undelivered", BYE);
+  }
 }
 
 async function sayLocal(host: RunningHost, text: string): Promise<void> {
@@ -252,33 +316,56 @@ export function sessionPath(home: string, code: string): string {
 
 export function write(file: string, side: "local" | "peer", state: string, text = ""): string {
   mkdirSync(path.dirname(file), { recursive: true });
-  const line = `${new Date().toISOString()} ${side} ${state}${text ? ` ${text}` : ""}`;
+  const line = `${stamp()} ${side} ${state}${text ? ` ${text}` : ""}`;
   appendFileSync(file, `${line}\n`);
   writeSync(1, `${line}\n`);
   return line;
 }
 
-export function parseWire(text: string): { kind: "connect" | "hello" | "confirm" | "say" | "bye" | "other"; text: string } {
-  if (text === CONNECT) return { kind: "connect", text: "" };
-  const match = text.match(/^\[\[agenthop:(hello|confirm|say|bye)]] ?([\s\S]*)$/);
-  if (match) return { kind: match[1] as "hello" | "confirm" | "say" | "bye", text: match[2] ?? "" };
-  return { kind: "other", text };
+/** Local time with its offset. A log is read by the person sitting in front of it. */
+export function stamp(now = new Date()): string {
+  const pad = (value: number, width = 2) => String(value).padStart(width, "0");
+  const offset = -now.getTimezoneOffset();
+  const sign = offset < 0 ? "-" : "+";
+  const size = Math.abs(offset);
+  const clock = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}.${pad(now.getMilliseconds(), 3)}`;
+  const day = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  return `${day}T${clock}${sign}${pad(Math.floor(size / 60))}:${pad(size % 60)}`;
+}
+
+/**
+ * The joining side stamps every line with the id it made up when it connected, so a third
+ * person holding the same code cannot be mistaken for the peer. Lines without an id come from
+ * an older version and are taken as they are.
+ */
+export function parseWire(text: string): { kind: "connect" | "hello" | "confirm" | "say" | "bye" | "other"; id: string; text: string } {
+  const match = text.match(/^\[\[agenthop:(connect|hello|confirm|say|bye)(?::([A-Za-z0-9-]+))?]] ?([\s\S]*)$/);
+  if (!match) return { kind: "other", id: "", text };
+  return { kind: match[1] as "connect", id: match[2] ?? "", text: match[3] ?? "" };
+}
+
+function wire(kind: string, id: string | undefined, text: string): string {
+  return `[[agenthop:${kind}${id ? `:${id}` : ""}]]${text ? ` ${text}` : ""}`;
+}
+
+function connectWire(id: string): string {
+  return wire("connect", id, "");
 }
 
 function helloWire(text: string): string {
-  return `[[agenthop:hello]] ${text}`;
+  return wire("hello", undefined, text);
 }
 
-function confirmWire(text: string): string {
-  return `[[agenthop:confirm]] ${text}`;
+function confirmWire(id: string, text: string): string {
+  return wire("confirm", id, text);
 }
 
-export function sayWire(text: string): string {
-  return `[[agenthop:say]] ${text}`;
+export function sayWire(id: string | undefined, text: string): string {
+  return wire("say", id, text);
 }
 
-function byeWire(): string {
-  return "[[agenthop:bye]]";
+function byeWire(id?: string): string {
+  return wire("bye", id, "");
 }
 
 function stdinLines(): LineSource {

@@ -40,7 +40,8 @@ export function installAgenthop(options: InstallOptions = {}): void {
  * install recorded, so `update` can refresh every copy without being told again.
  */
 export function rememberSkillDirs(named: string[], home = homedir()): string[] {
-  const dirs = new Set(readSkillDirs(home));
+  // A directory that is gone was removed on purpose. Refreshing the skill must not bring it back.
+  const dirs = new Set(readSkillDirs(home).filter(isDirectory));
   for (const dir of named) {
     if (!dir.trim()) throw new Error("usage: agenthop install [--skill-dir DIR]");
     dirs.add(resolve(dir));
@@ -163,6 +164,14 @@ export function ensureDir(dir: string): void {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "EEXIST") throw error;
     }
+  }
+}
+
+function isDirectory(dir: string): boolean {
+  try {
+    return statSync(dir).isDirectory();
+  } catch {
+    return false;
   }
 }
 

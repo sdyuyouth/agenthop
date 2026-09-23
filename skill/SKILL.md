@@ -70,7 +70,16 @@ agenthop <配对码>
 
 收到 `peer bye` 时不用做任何事，也不要再写标准输入：程序会自己把 bye 回过去再退出。
 
-对方掉线或房间过期时，会写出一行 `peer gone` 并退出。标准输入被关掉时会写出一行 `local input-closed`，这一方还能继续收听，但再也说不了话。
+## 出问题时它会说什么
+
+- `local reconnecting` / `local reconnected`：连接断了，正在用同一个配对码把房间接回来；接回来之后对话照常继续，不用重新配对。
+- `local undelivered <正文>`：这一句**没有送到对方**。不要当成已经回复过。
+- `peer gone`：对方不在了（进程退出、网络断了、或者房间空闲超过十分钟）。
+- `local expired`：一直没有人用这个配对码加入，房间过期了。要重新执行 `agenthop "<任务背景>"` 拿一个新配对码。
+- `peer refused`：第三个人拿着同一个配对码在说话，已经被忽略。
+- `local input-closed`：标准输入被关掉了，这一方只能收听。
+
+按 Ctrl-C 也会先把 bye 送出去再退出。
 
 ## 日志
 
@@ -80,8 +89,10 @@ macOS 与 Linux 在 `~/.agenthop/sessions/<配对码>.log`，Windows 在 `%USERP
 <时间> <local|peer> <状态> <正文>
 ```
 
-状态有 `waiting`、`connected`、`hello`、`confirm`、`ready`、`say`、`bye`、`gone`、`input-closed`。`local` 是自己，`peer` 是对方。
+状态有 `waiting`、`connected`、`hello`、`confirm`、`ready`、`say`、`bye`，以及上面那一节里的 `reconnecting`、`reconnected`、`undelivered`、`gone`、`expired`、`refused`、`input-closed`。`local` 是自己，`peer` 是对方。时间是本机时间，带时区偏移。
 
 ## 中继
 
-默认是 `https://agenthop.imatrix.tech`。换中继用 `--relay URL` 或环境变量 `AGENTHOP_RELAY`。自建中继有密码时两边都加 `--pass <密码>`。房间在十分钟没有对话后消失。
+默认是 `https://agenthop.imatrix.tech`。换中继用 `--relay URL` 或环境变量 `AGENTHOP_RELAY`。自建中继有密码时两边都加 `--pass <密码>`。
+
+房间在十分钟没有对话后消失，所以配对码要在十分钟内用掉。连接中途断了不用管，程序会自己用同一个配对码接回来。

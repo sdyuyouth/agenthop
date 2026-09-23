@@ -18,6 +18,10 @@ const child = spawn(process.execPath, [tsx, join(root, "packages", "cli", "src",
   stdio: "inherit",
   windowsHide: true,
 });
+// Ctrl-C reaches the whole group in a terminal; forward it too so `node bin/agenthop.mjs`
+// gets the same chance to say goodbye as the released program.
+for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => child.kill(signal));
+
 child.on("exit", (code, signal) => {
   if (signal) {
     process.kill(process.pid, signal);

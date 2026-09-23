@@ -49,13 +49,19 @@ tunnel ─┬─ relay-node（自建中继，ws + node:http）
 
 加入方没有 host，直接用 `sendMessage()` 打中继的 `/r/<code>/`，并轮询 `agenthop/queue` 读事件（1s；这个轮询同时也是房间的保活）。
 
-状态机靠**正文里的 wire 前缀**区分，不是靠协议字段：`[[agenthop:connect]]`、`[[agenthop:hello]] …`、`[[agenthop:confirm]] …`、`[[agenthop:say]] …`、`[[agenthop:bye]]`（`session.ts: parseWire`）。顺序固定为 `connect → hello → confirm → ready → say → bye`。加入方在 `wait-confirm` 之前写的行会被暂存（`early`），确认之后才放行——改这段时别把暂存丢了。
+**断线不等于结束**：创建方的 WS 掉了就按退避重开房间（`host.ts: recover`，同一个配对码，`RECOVER_MS` 45 秒），加入方读不到房间时也重试同样长。两边都会写 `reconnecting` / `reconnected`。房间是按配对码寻址的，所以重开之后对话接得上——`Talk` 日志在本地进程里，没丢。
+
+状态机靠**正文里的 wire 前缀**区分，不是靠协议字段：`[[agenthop:connect:<id>]]`、`[[agenthop:hello]] …`、`[[agenthop:confirm:<id>]] …`、`[[agenthop:say:<id>]] …`、`[[agenthop:bye:<id>]]`（`session.ts: parseWire`）。顺序固定为 `connect → hello → confirm → ready → say → bye`。加入方在 `wait-confirm` 之前写的行会被暂存（`early`），确认之后才放行——改这段时别把暂存丢了。
+
+`<id>` 是加入方自己生成的，创建方只认第一个 connect 带来的那个，别人拿着同一个配对码说话会被记成 `peer refused`。**没有 id 的行按旧版本接受**（`id === ""`），别把这个兼容去掉。房间本身不认人：拿到码的人都能 POST，过滤发生在会话层。
 
 **stdin 的语义**：一行正文就是一句话；`/bye`（`session.ts: BYE`）结束对话；EOF **不等于** bye——只写一行 `local input-closed` 然后继续收听，因为很多 agent harness 启动子进程时 stdin 本来就是关的，EOF 触发退出会让房间刚开就关。
 
 **告别是双向的**：收到 `[[agenthop:bye]]` 的一方自动把 bye 回过去再退出，先说的一方等这个回复，等不到就写 `peer gone`。`saidBye` 挡住无限对回。创建方作为回话方时要 linger 两秒再关房间，因为对方是隔着中继轮询读的。
 
-日志与 stdout 同一份内容：`<时间> <local|peer> <状态> <正文>`，写到 `<家目录>/.agenthop/sessions/<配对码>.log`（`session.ts: write`）。**stdout 的格式就是 agent 的接口**，改格式等于改 SKILL.md 的契约。`local` 恒指自己，`peer` 恒指对方——不要再让一个状态词在两边表示不同的事。
+**送不出去的话要留痕**：`outbox.flush` 把发送失败的行写成 `local undelivered <正文>`，终止前 `reportUnsent()` 把还没送出的行也倒出来。静默丢话会让 agent 以为自己回复过——这是最不能退的一条。
+
+日志与 stdout 同一份内容：`<时间> <local|peer> <状态> <正文>`，时间是**本机时间带偏移**（`session.ts: stamp`，不是 UTC，日志是给人读的），写到 `<家目录>/.agenthop/sessions/<配对码>.log`（`session.ts: write`）。**stdout 的格式就是 agent 的接口**，改格式等于改 SKILL.md 的契约。`local` 恒指自己，`peer` 恒指对方——不要再让一个状态词在两边表示不同的事。
 
 ## 队列语义（Talk / Room）
 
@@ -70,6 +76,7 @@ tunnel ─┬─ relay-node（自建中继，ws + node:http）
 - **SKILL.md 是生成源**：`skill/SKILL.md` 由 `scripts/build-release.mjs` 转成 `packages/cli/src/skill-text.ts`（被 `agenthop install` 写盘）。改技能文案后要跑一次 build，否则二进制里还是旧文本。README、`bin.ts` 的 `printHelp`、`skill/SKILL.md` 三处说法必须一致，**以 SKILL.md 为准**。
 - **文案写正面规则，不要堆禁令**。真正的要求只有两条：一个进程从头跑到尾，整个过程用户看得见。不要再去点名某个具体错法（某某命令、某某文件名）——那是在描述一次事故，不是在描述规则。老的 flag 和命令在 `args.ts` 的 `RETIRED_FLAGS` / `RETIRED_COMMANDS` 里给迁移提示，这是唯一该出现旧名字的地方。
 - **版本号在 `packages/cli/src/version.ts`**，`agenthop update` 拿它和中继 `/latest` 比较。发版要改它。
+- **更新要校验**：`scripts/build-release.mjs` 生成 `dist/SHA256SUMS`，它是 release 的第六个资产，也在 Worker 的 `RELEASE_FILES` 白名单里（漏了白名单，取不到校验和的用户就更新不了）。`update` 先拿校验和再下程序，对不上就丢掉不替换。**校验和优先从 GitHub 取、程序从中继取**，这样单独一方换不掉你的程序；GitHub 取不到才退回中继那份并说明。`AGENTHOP_RELEASES_BASE` 可以改校验和来源（测试在用）。
 - **技能跟着程序一起更新**：`install --skill-dir` 把目录记到 `~/.agenthop/install.json`，`update` 换完程序后再跑一次**新程序**的 `install --skill-only` 把新 SKILL.md 写回去——技能文本编译在二进制里，旧进程手里只有旧文本。写不成时打印手动命令，不要静默留一个过期的技能文件。
 - **不要把程序复制到它自己身上**。`install` 从已安装位置运行时 source 和 dest 是同一个文件，copyFileSync 会把它删掉；路径字符串比较不够，家目录经过符号链接时同一个文件有两种写法。用 `isSameFile`（inode+dev），复制走 `placeCommand`（先写 `.new` 再改名）。这个 bug 在 v0.2.0/v0.2.1 上真的删过用户的命令。
 - **默认中继 `https://agenthop.imatrix.tech` 写在 `host.ts: DEFAULT_RELAY`**；换中继是运行时的事（`--relay` / `AGENTHOP_RELAY`），不要为了改默认地址发版。

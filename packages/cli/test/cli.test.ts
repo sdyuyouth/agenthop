@@ -49,12 +49,34 @@ describe("the command itself", () => {
     },
     20000,
   );
+
+  it(
+    "says goodbye when the person presses Ctrl-C",
+    async () => {
+      const relay = await startRelay();
+      relays.push(relay);
+      const home = await mkdtemp(path.join(tmpdir(), "agenthop-cli-"));
+      const creator = run(["按 Ctrl-C 的一方"], relay.url, home);
+      const code = await waitFor(creator, /waiting (\S+)/);
+      const joiner = run([code], relay.url, home);
+      await waitFor(joiner, /peer hello/);
+      joiner.stdin.write("确认\n");
+      await waitFor(creator, /local ready/);
+
+      process.kill(-creator.pid!, "SIGINT");
+      await waitFor(joiner, /peer bye/);
+      expect(await exitOf(creator)).toBe(0);
+      expect(await exitOf(joiner)).toBe(0);
+    },
+    40000,
+  );
 });
 
 function run(args: string[], relay: string, home: string): ChildProcessWithoutNullStreams {
   const child = spawn(process.execPath, [launcher, ...args], {
     env: { ...process.env, AGENTHOP_RELAY: relay, HOME: home, USERPROFILE: home },
     stdio: ["pipe", "pipe", "pipe"],
+    detached: true,
   });
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");

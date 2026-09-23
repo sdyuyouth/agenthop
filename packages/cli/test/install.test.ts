@@ -1,4 +1,5 @@
-import { mkdtemp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -31,17 +32,31 @@ describe("skill install", () => {
     const first = path.join(dir, "agent-one", "skills", "agenthop");
     const second = path.join(dir, "agent-two", "skills", "agenthop");
 
-    expect(rememberSkillDirs([first], home)).toEqual([first]);
-    expect(rememberSkillDirs([second], home)).toEqual([first, second]);
-    expect(rememberSkillDirs([], home)).toEqual([first, second]);
+    // Each install names a directory and writes the skill into it, the way the command does.
+    writeSkillFiles(rememberSkillDirs([first], home), home);
+    writeSkillFiles(rememberSkillDirs([second], home), home);
     expect(readSkillDirs(home)).toEqual([first, second]);
 
-    const written = writeSkillFiles(readSkillDirs(home), home);
+    const written = writeSkillFiles(rememberSkillDirs([], home), home);
     expect(written).toEqual([
       path.join(home, ".agenthop", "SKILL.md"),
       path.join(first, "SKILL.md"),
       path.join(second, "SKILL.md"),
     ]);
+  });
+
+  it("forgets a skill directory that has been deleted instead of bringing it back", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "agenthop-install-"));
+    const home = path.join(dir, "home");
+    const kept = path.join(dir, "agent-one", "skills", "agenthop");
+    const removed = path.join(dir, "agent-two", "skills", "agenthop");
+    writeSkillFiles(rememberSkillDirs([kept, removed], home), home);
+
+    await rm(path.join(dir, "agent-two"), { recursive: true });
+
+    expect(rememberSkillDirs([], home)).toEqual([kept]);
+    expect(readSkillDirs(home)).toEqual([kept]);
+    expect(existsSync(removed)).toBe(false);
   });
 
   it("has no directories to remember before the first install", async () => {

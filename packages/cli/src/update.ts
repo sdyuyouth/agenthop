@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, lstatSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, lstatSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, platform, arch } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { DEFAULT_RELAY } from "./host.js";
@@ -15,6 +16,12 @@ const ASSETS: Record<string, string> = {
 };
 
 export type ReleaseInfo = { tag: string; assets: string[] };
+
+const GITHUB_RELEASES = "https://github.com/sdyuyouth/agenthop/releases/download";
+
+function releasesBase(): string {
+  return (process.env.AGENTHOP_RELEASES_BASE ?? GITHUB_RELEASES).replace(/\/$/, "");
+}
 
 export function releaseAsset(system = platform(), cpu = arch()): string {
   const name = ASSETS[`${system}-${cpu}`];
@@ -40,10 +47,19 @@ export async function updateAgenthop(options: { check?: boolean; force?: boolean
     return;
   }
   if (!latest.assets.includes(asset)) throw new Error(`release ${latest.tag} has no ${asset}`);
+  const sums = await readSums(base, latest.tag);
+  const expected = sums.hashes.get(asset);
+  if (!expected) throw new Error(`release ${latest.tag} 没有 ${asset} 的校验和，不敢装`);
   const target = options.target ?? installTarget();
   const downloaded = `${target}.download`;
   ensureDir(dirname(target));
   await download(`${base}/download/${asset}`, downloaded);
+  const actual = sha256(downloaded);
+  if (actual !== expected) {
+    rmSync(downloaded, { force: true });
+    throw new Error(`下载回来的文件和 ${sums.from} 上的校验和对不上，已经丢弃，没有替换现在的程序。\n  期望 ${expected}\n  实际 ${actual}`);
+  }
+  console.log(`sha256 ${actual} (校验和来自 ${sums.from})`);
   replaceExecutable(target, downloaded);
   console.log(target);
   refreshSkill(target);
@@ -71,6 +87,47 @@ export function skillReminder(target: string, home = homedir()): string {
     "SKILL.md 没有一起更新。技能文本在程序里面，要再跑一次安装才会写出来：",
     `  ${target} install${named}`,
   ].join("\n");
+}
+
+/**
+ * The program is fetched through the relay, so the hashes are fetched from GitHub: one of them
+ * would have to be wrong on its own for a swapped program to be installed. When GitHub cannot be
+ * reached the relay's copy is used and said so, which only proves the download arrived intact.
+ */
+export async function readSums(base: string, tag: string): Promise<{ hashes: Map<string, string>; from: string }> {
+  const sources = [
+    { from: "github.com", url: `${releasesBase()}/${tag}/SHA256SUMS` },
+    { from: "中继（与程序同源）", url: `${base}/download/SHA256SUMS` },
+  ];
+  let last = "";
+  for (const source of sources) {
+    try {
+      const response = await fetch(source.url, { headers: { "user-agent": "agenthop" } });
+      if (!response.ok) {
+        last = `${source.url} → ${response.status}`;
+        continue;
+      }
+      const hashes = parseSums(await response.text());
+      if (hashes.size > 0) return { hashes, from: source.from };
+      last = `${source.url} → 空文件`;
+    } catch (error) {
+      last = `${source.url} → ${error instanceof Error ? error.message : error}`;
+    }
+  }
+  throw new Error(`拿不到校验和，没有替换现在的程序。${last}`);
+}
+
+export function parseSums(body: string): Map<string, string> {
+  const hashes = new Map<string, string>();
+  for (const line of body.split(/\r?\n/)) {
+    const match = line.trim().match(/^([0-9a-f]{64})\s+\*?(\S+)$/i);
+    if (match) hashes.set(match[2]!, match[1]!.toLowerCase());
+  }
+  return hashes;
+}
+
+export function sha256(file: string): string {
+  return createHash("sha256").update(readFileSync(file)).digest("hex");
 }
 
 async function readLatest(base: string): Promise<ReleaseInfo> {
