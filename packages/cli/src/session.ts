@@ -84,7 +84,7 @@ async function createSession(options: SessionOptions, home: string): Promise<voi
       if (wire.kind === "connect") return false;
       return wire.id === peerId;
     },
-    onRefused: (reason, text) => write(logFile(), "peer", "refused", text ? `${reason}：${text}` : reason),
+    onRefused: (reason, text) => write(logFile(), "peer", "refused", text ? `${reason}：${brief(text)}` : reason),
     onReconnecting: (reason) => write(logFile(), "local", "reconnecting", `${reason}，正在用同一个配对码把房间接回来`),
     onReconnected: () => write(logFile(), "local", "reconnected", "房间接回来了，对话可以继续"),
     onGone: (reason) => {
@@ -140,7 +140,7 @@ async function createSession(options: SessionOptions, home: string): Promise<voi
         } else if (phase === "ready" && wire.kind === "say") {
           write(log, "peer", "say", wire.text);
         } else if (wire.kind === "other") {
-          write(log, "peer", "other", wire.text);
+          write(log, "peer", "other", brief(wire.text));
         }
       }
       if (!saidBye && phase === "ready" && (await out.flush(say))) saidBye = Date.now();
@@ -214,7 +214,7 @@ async function joinSession(options: SessionOptions, home: string): Promise<void>
       } else if (phase === "ready" && wire.kind === "say") {
         write(log, "peer", "say", wire.text);
       } else if (wire.kind === "other") {
-        write(log, "peer", "other", wire.text);
+        write(log, "peer", "other", brief(wire.text));
       }
     }
     const typed = options.lines!.take();
@@ -297,6 +297,15 @@ async function farewell(
   } catch {
     write(logFile, "local", "undelivered", BYE);
   }
+}
+
+/**
+ * What a refused or unreadable line looks like in the log. Only the conversation itself is
+ * written out in full: anyone holding the code can post, and a log line is one line.
+ */
+export function brief(text: string, max = 80): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length <= max ? flat : `${flat.slice(0, max)}…（共 ${flat.length} 字）`;
 }
 
 /** Attachments are not written to disk unless the person asked for that, so say what arrived. */
