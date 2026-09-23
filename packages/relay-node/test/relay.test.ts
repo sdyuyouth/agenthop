@@ -58,18 +58,25 @@ describe("node relay", () => {
 
   it("requires the relay password and expires idle rooms", async () => {
     let now = 0;
-    const relay = await startRelay({ pass: "secret", now: () => now, idleMs: 1_000 });
+    const relay = await step("start the relay", startRelay({ pass: "secret", now: () => now, idleMs: 1_000 }));
     openRelays.push(relay);
-    expect((await fetch(`${relay.url}/r/1111-acid-acorn-acre/`)).status).toBe(401);
+    const unauthorized = await step("fetch without the password", fetch(`${relay.url}/r/1111-acid-acorn-acre/`));
+    expect(unauthorized.status).toBe(401);
     const code = "1111-acid-acorn-acre";
-    const host = await connectHost(relay.url, code, "secret");
-    expect((await fetch(`${relay.url}/r/${code}/`, { headers: { authorization: "Bearer secret" } })).status).toBe(200);
+    const host = await step("connect the host", connectHost(relay.url, code, "secret"));
+    const proxied = await step(
+      "fetch with the password",
+      fetch(`${relay.url}/r/${code}/`, { headers: { authorization: "Bearer secret" } }),
+    );
+    expect(proxied.status).toBe(200);
     now = 1_000;
     relay.sweep();
     host.close();
-    expect(
-      (await fetch(`${relay.url}/r/${code}/`, { headers: { authorization: "Bearer secret" } })).status,
-    ).toBe(404);
+    const afterSweep = await step(
+      "fetch after the room expired",
+      fetch(`${relay.url}/r/${code}/`, { headers: { authorization: "Bearer secret" } }),
+    );
+    expect(afterSweep.status).toBe(404);
   });
 
   it("rate limits missing codes", async () => {
@@ -101,6 +108,21 @@ describe("node relay", () => {
     await read.arrayBuffer();
   });
 });
+
+/** A hung await should say which one it was, not just that the test ran out of time. */
+async function step<T>(label: string, work: Promise<T>, ms = 10_000): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label}: 没有在 ${ms}ms 内完成`)), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 async function connectHost(relayUrl: string, code: string, pass?: string): Promise<WebSocket> {
   const ws = new WebSocket(`${relayUrl.replace("http", "ws")}/host/${code}`, {
