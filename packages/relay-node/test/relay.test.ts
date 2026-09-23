@@ -132,6 +132,55 @@ describe("node relay", () => {
     expect(JSON.parse(await step("the relay answers ready", ready)).type).toBe("ready");
     ws.close();
   });
+
+  it("keeps the room for the host that opened it, even while its socket is away", async () => {
+    const relay = await startRelay();
+    openRelays.push(relay);
+    const code = "1111-acid-acorn-acre";
+    const token = "the-host-token";
+
+    const first = await connectHost(relay.url, code, undefined, token);
+    first.close();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Someone else holding the code arrives while the socket is gone.
+    const stranger = new WebSocket(`${relay.url.replace("http", "ws")}/host/${code}`);
+    const refusal = new Promise<string>((resolve, reject) => {
+      stranger.once("message", (data) => resolve(data.toString()));
+      stranger.once("error", reject);
+    });
+    await new Promise<void>((resolve, reject) => {
+      stranger.once("open", () => {
+        stranger.send(JSON.stringify({ v: 1, type: "open", code, token: "a-different-token" }));
+        resolve();
+      });
+      stranger.once("error", reject);
+    });
+    expect(JSON.parse(await step("the stranger is turned away", refusal))).toEqual({
+      v: 1,
+      type: "error",
+      code: "room_taken",
+    });
+    stranger.close();
+
+    // The host that opened it comes back with the same token.
+    const again = await step("the host returns", connectHost(relay.url, code, undefined, token));
+    expect((await fetch(`${relay.url}/r/${code}/`)).status).toBe(200);
+    again.close();
+  });
+
+  it("stops carrying a room that has spent its allowance", async () => {
+    const relay = await startRelay({ roomBytes: 4 * 1024 });
+    openRelays.push(relay);
+    const code = "1111-acid-acorn-acre";
+    const host = await connectHost(relay.url, code);
+
+    expect((await fetch(`${relay.url}/r/${code}/`, { method: "POST", body: "x".repeat(3 * 1024) })).status).toBe(200);
+    const over = await fetch(`${relay.url}/r/${code}/`, { method: "POST", body: "x".repeat(3 * 1024) });
+    expect(over.status).toBe(429);
+    expect(await over.text()).toContain("room_quota");
+    host.close();
+  });
 });
 
 /** A hung await should say which one it was, not just that the test ran out of time. */
@@ -149,7 +198,7 @@ async function step<T>(label: string, work: Promise<T>, ms = 10_000): Promise<T>
   }
 }
 
-async function connectHost(relayUrl: string, code: string, pass?: string): Promise<WebSocket> {
+async function connectHost(relayUrl: string, code: string, pass?: string, token?: string): Promise<WebSocket> {
   const ws = new WebSocket(`${relayUrl.replace("http", "ws")}/host/${code}`, {
     headers: pass ? { authorization: `Bearer ${pass}` } : undefined,
   });
@@ -182,7 +231,7 @@ async function connectHost(relayUrl: string, code: string, pass?: string): Promi
       send(ws, frame.requestId, 200, "application/json", payload || "ok");
     }
   });
-  ws.send(JSON.stringify({ v: 1, type: "open", code }));
+  ws.send(JSON.stringify({ v: 1, type: "open", code, token }));
   const ready = JSON.parse(String(await onceMessage(ws)));
   expect(ready.type).toBe("ready");
   return ws;

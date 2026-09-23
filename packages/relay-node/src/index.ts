@@ -1,7 +1,8 @@
 import http from "node:http";
-import { WebSocket, WebSocketServer } from "ws";
+import { WebSocket, WebSocketServer, type RawData } from "ws";
 import {
   IDLE_MS,
+  MAX_ROOM_BYTES,
   PostCounter,
   RateCounters,
   RelaySession,
@@ -12,6 +13,7 @@ import {
   normalizeCode,
   roomIdFromCode,
   safeEqual,
+  tokenDigest,
 } from "@agenthop/tunnel";
 
 export type RelayOptions = {
@@ -20,6 +22,8 @@ export type RelayOptions = {
   pass?: string;
   now?: () => number;
   idleMs?: number;
+  /** Everything one room may carry while it lives. */
+  roomBytes?: number;
 };
 
 export type RunningRelay = {
@@ -31,6 +35,8 @@ export type RunningRelay = {
 
 type Room = {
   posts: PostCounter;
+  /** Hash of the token the first host showed. Only that host may hold the room again. */
+  hostHash: string | null;
   code: string;
   session: RelaySession | null;
   socket: WebSocket | null;
@@ -42,6 +48,7 @@ type Room = {
 export async function startRelay(options: RelayOptions = {}): Promise<RunningRelay> {
   const now = options.now ?? Date.now;
   const idleMs = options.idleMs ?? IDLE_MS;
+  const roomBytes = options.roomBytes ?? MAX_ROOM_BYTES;
   const rooms = new Map<string, Room>();
   const rates = new RateCounters();
   const pass = options.pass;
@@ -105,7 +112,7 @@ export async function startRelay(options: RelayOptions = {}): Promise<RunningRel
       res.writeHead(forwarded.status, Object.fromEntries(forwarded.headers));
       res.end(payload);
     } catch (error) {
-      const status = error instanceof TunnelError && error.code === "body_too_large" ? 413 : 502;
+      const status = quotaOrBodyStatus(error);
       if (!res.headersSent) res.writeHead(status);
       res.end(error instanceof Error ? error.message : "failed");
     }
@@ -154,9 +161,20 @@ export async function startRelay(options: RelayOptions = {}): Promise<RunningRel
       return;
     }
     const publicBase = `${httpOrigin(requestUrl, server)}/r/${encodeURIComponent(code)}/`;
-    const room: Room = { code, session: null, socket: ws, ready: false, deadline: now() + idleMs, publicBase, posts: new PostCounter() };
+    const existingHash = existing?.hostHash ?? null;
+    const room: Room = {
+      code,
+      session: null,
+      socket: ws,
+      ready: false,
+      deadline: now() + idleMs,
+      publicBase,
+      posts: new PostCounter(),
+      hostHash: existingHash,
+    };
     rooms.set(roomId, room);
     ws.once("message", (data, isBinary) => {
+      let token: string | undefined;
       if (isBinary) {
         ws.send(encodeControl({ v: 1, type: "error", code: "invalid_code" }));
         ws.close();
@@ -170,24 +188,45 @@ export async function startRelay(options: RelayOptions = {}): Promise<RunningRel
           rooms.delete(roomId);
           return;
         }
+        token = control.token;
       } catch {
         ws.send(encodeControl({ v: 1, type: "error", code: "invalid_code" }));
         ws.close();
         rooms.delete(roomId);
         return;
       }
-      const session = new RelaySession((frame) => {
-        if (ws.readyState === ws.OPEN) ws.send(frame);
-      }, publicBase);
-      room.session = session;
-      room.ready = true;
-      room.deadline = now() + idleMs;
-      ws.send(encodeControl({ v: 1, type: "ready", publicBase }));
-      ws.on("message", (next, binary) => {
+      // Deciding whether this host may hold the room takes a digest, and a digest takes a turn
+      // of the loop. Anything that arrives meanwhile is held rather than dropped.
+      const held: Uint8Array[] = [];
+      const collect = (next: RawData, binary: boolean): void => {
+        if (binary) held.push(toBytes(next));
+      };
+      ws.on("message", collect);
+      void claim(room, token).then((allowed) => {
+        ws.off("message", collect);
+        if (!allowed) {
+          ws.send(encodeControl({ v: 1, type: "error", code: "room_taken" }));
+          ws.close(1008, "room_taken");
+          return;
+        }
+        const session = new RelaySession(
+          (frame) => {
+            if (ws.readyState === ws.OPEN) ws.send(frame);
+          },
+          publicBase,
+          undefined,
+          roomBytes,
+        );
+        room.session = session;
+        room.ready = true;
         room.deadline = now() + idleMs;
-        if (!binary) return;
-        const bytes = toBytes(next);
-        session.onBinary(bytes);
+        ws.send(encodeControl({ v: 1, type: "ready", publicBase }));
+        ws.on("message", (next, binary) => {
+          room.deadline = now() + idleMs;
+          if (!binary) return;
+          session.onBinary(toBytes(next));
+        });
+        for (const bytes of held) session.onBinary(bytes);
       });
     });
     ws.on("close", () => {
@@ -195,7 +234,8 @@ export async function startRelay(options: RelayOptions = {}): Promise<RunningRel
       room.session = null;
       room.ready = false;
       room.socket = null;
-      if (rooms.get(roomId) === room) rooms.delete(roomId);
+      // The record stays until the room expires so the host that opened it can come back to
+      // it. Dropping it here would hand the room to whoever asked next.
     });
   }
 
@@ -226,6 +266,26 @@ export async function startRelay(options: RelayOptions = {}): Promise<RunningRel
         server.close((error) => (error ? reject(error) : resolve()));
       }),
   };
+}
+
+function quotaOrBodyStatus(error: unknown): number {
+  if (!(error instanceof TunnelError)) return 502;
+  if (error.code === "room_quota") return 429;
+  if (error.code === "body_too_large") return 413;
+  return 502;
+}
+
+/**
+ * The first host to open a room fixes who may hold it. A host that reconnects shows the same
+ * token; a host from an older version brings none and the room stays as open as it was before.
+ */
+async function claim(room: Room, token: string | undefined): Promise<boolean> {
+  if (!room.hostHash) {
+    if (token) room.hostHash = await tokenDigest(token);
+    return true;
+  }
+  if (!token) return false;
+  return safeEqual(room.hostHash, await tokenDigest(token));
 }
 
 function noteMiss(rates: RateCounters, req: http.IncomingMessage, now: () => number): boolean {

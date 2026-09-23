@@ -4,6 +4,13 @@ export const MAX_CHUNK = 64 * 1024;
 /** Non-streaming request bodies larger than this are rejected. */
 export const MAX_BODY = 1024 * 1024;
 
+/**
+ * Everything one room may carry while it lives. The conversation itself is capped by the host
+ * at 8 MiB; this is the relay's own ceiling, because a client that does not play along would
+ * otherwise spend the relay operator's bandwidth without limit.
+ */
+export const MAX_ROOM_BYTES = 64 * 1024 * 1024;
+
 /** Room closes after this long with no frames and no HTTP. */
 export const IDLE_MS = 10 * 60 * 1000;
 

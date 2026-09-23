@@ -100,6 +100,9 @@ tunnel ─┬─ relay-node（自建中继，ws + node:http）
 - **不要把程序复制到它自己身上**。`install` 从已安装位置运行时 source 和 dest 是同一个文件，copyFileSync 会把它删掉；路径字符串比较不够，家目录经过符号链接时同一个文件有两种写法。用 `isSameFile`（inode+dev），复制走 `placeCommand`（先写 `.new` 再改名）。这个 bug 在 v0.2.0/v0.2.1 上真的删过用户的命令。
 - **默认中继 `https://agenthop.imatrix.tech` 写在 `host.ts: DEFAULT_RELAY`**；换中继是运行时的事（`--relay` / `AGENTHOP_RELAY`），不要为了改默认地址发版。
 - Worker 在鉴权之前还兼职发布分发：`/latest`（读 GitHub releases/latest 的重定向 Location 取 tag，因为 Worker 里调 GitHub API 失败过）和 `/download/<asset>`，白名单在 `RELEASE_FILES`。
+- **房间归第一个开它的 host**：`open` 帧带一个随机 `token`，中继只存 `SHA-256`（relay-cf 放 `meta` 表，relay-node 放房间记录里，socket 断了**不要删房间记录**，否则等于把房间让给下一个来的人）。没带 token 的旧 host 照旧放行，别把这个兼容去掉。
+- **中继不留访问者地址**：`RateLimit` 的键是加盐摘要，盐按天轮换，每次 `allow()` 顺手删掉早于当前分钟的行。`RateCounters`（自建中继）同样按窗口清理——那里原本只增不删，既留地址又涨内存。
+- **中继自己也有总量上限**：`MAX_ROOM_BYTES`（64 MiB，两个方向都算）在 `RelaySession` 里，超了抛 `room_quota`，两个中继都映射成 429。CLI 的 8 MiB 配额是 host 自律，拦不住不配合的客户端。
 - 房间 10 分钟没有转发就消失（`IDLE_MS`），配对码就是唯一凭证。TLS 在 Cloudflare 终结，托管中继能读到正文，这一版没有端到端加密——别在文档里暗示有。
 - 附件（`packages/agent`，512 KiB 上限）在协议和 `Room` 里还在，但会话流程没有入口。`SPEC.md` 仍然描述它，不要顺手删。
 - 注释和 commit message 用英文，README / SKILL.md / CLI 帮助文本用中文。

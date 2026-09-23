@@ -68,6 +68,17 @@ describe.skipIf(!live)("wrangler dev", () => {
     host.close();
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect((await fetch(`${base}/r/${code}/`)).status).toBe(404);
+
+    // The room belongs to whoever opened it. Holding the code is not enough to take it over
+    // while the socket is away, and the host that opened it can come back to it.
+    const held = "0000-acid-acorn-acre";
+    const owner = await connectHost(held, "the-host-token");
+    owner.close();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(await openAs(held, "a-different-token")).toEqual({ v: 1, type: "error", code: "room_taken" });
+    const again = await connectHost(held, "the-host-token");
+    expect((await fetch(`${base}/r/${held}/`, { method: "POST", body: "still mine" })).status).toBe(200);
+    again.close();
   });
 });
 
@@ -91,7 +102,7 @@ async function waitUntilReady(proc: ChildProcess): Promise<void> {
   });
 }
 
-async function connectHost(code: string): Promise<WebSocket> {
+async function connectHost(code: string, token?: string): Promise<WebSocket> {
   const ws = new WebSocket(`ws://127.0.0.1:${port}/host/${code}`);
   await new Promise<void>((resolve, reject) => {
     ws.addEventListener("open", () => resolve());
@@ -102,7 +113,7 @@ async function connectHost(code: string): Promise<WebSocket> {
     void onMessage(ws, requests, event.data);
   });
   const ready = nextText(ws);
-  ws.send(JSON.stringify({ v: 1, type: "open", code }));
+  ws.send(JSON.stringify({ v: 1, type: "open", code, token }));
   expect(JSON.parse(await ready).type).toBe("ready");
   return ws;
 }
@@ -195,4 +206,15 @@ function concat(parts: Uint8Array[]): Uint8Array {
     offset += part.byteLength;
   }
   return out;
+}
+
+/** Opens a room and returns whatever the relay answers, without expecting it to be `ready`. */
+async function openAs(code: string, token: string): Promise<unknown> {
+  const ws = new WebSocket(`${base.replace("http", "ws")}/host/${code}`);
+  const answer = nextText(ws);
+  await new Promise((resolve) => ws.addEventListener("open", resolve, { once: true }));
+  ws.send(JSON.stringify({ v: 1, type: "open", code, token }));
+  const reply = JSON.parse(await answer) as unknown;
+  ws.close();
+  return reply;
 }

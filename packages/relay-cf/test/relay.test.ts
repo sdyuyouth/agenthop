@@ -1,4 +1,5 @@
-import { SELF } from "cloudflare:test";
+import { SELF, env, runInDurableObject } from "cloudflare:test";
+import { rateShard } from "@agenthop/tunnel";
 import { describe, expect, it } from "vitest";
 
 describe("workers relay", () => {
@@ -21,5 +22,22 @@ describe("workers relay", () => {
       refused = response.status === 429;
     }
     expect(refused).toBe(true);
+  });
+
+  it("counts an address without keeping it", async () => {
+    const ip = "203.0.113.77";
+    for (let i = 0; i < 3; i++) {
+      await SELF.fetch("http://example.com/r/5555-acid-acorn-acre/", { headers: { "cf-connecting-ip": ip } });
+    }
+
+    const stub = env.RATE_LIMIT.getByName(rateShard(ip));
+    const rows = await runInDurableObject(stub, (_instance, state) =>
+      state.storage.sql.exec<{ k: string; window: number }>("SELECT k, window FROM counters").toArray(),
+    );
+
+    expect(rows.length).toBeGreaterThan(0);
+    // The address itself is never written down, and only the current minute is kept.
+    expect(rows.some((row) => row.k.includes(ip))).toBe(false);
+    expect(new Set(rows.map((row) => row.window)).size).toBe(1);
   });
 });

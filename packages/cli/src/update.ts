@@ -94,6 +94,11 @@ export function skillReminder(target: string, home = homedir()): string {
  * would have to be wrong on its own for a swapped program to be installed. When GitHub cannot be
  * reached the relay's copy is used and said so, which only proves the download arrived intact.
  */
+function relayHeaders(): Record<string, string> {
+  const pass = process.env.AGENTHOP_PASS;
+  return pass ? { authorization: `Bearer ${pass}` } : {};
+}
+
 export async function readSums(base: string, tag: string): Promise<{ hashes: Map<string, string>; from: string }> {
   const sources = [
     { from: "github.com", url: `${releasesBase()}/${tag}/SHA256SUMS` },
@@ -102,7 +107,7 @@ export async function readSums(base: string, tag: string): Promise<{ hashes: Map
   let last = "";
   for (const source of sources) {
     try {
-      const response = await fetch(source.url, { headers: { "user-agent": "agenthop" } });
+      const response = await fetch(source.url, { headers: { "user-agent": "agenthop", ...relayHeaders() } });
       if (!response.ok) {
         last = `${source.url} → ${response.status}`;
         continue;
@@ -131,7 +136,7 @@ export function sha256(file: string): string {
 }
 
 async function readLatest(base: string): Promise<ReleaseInfo> {
-  const response = await fetch(`${base}/latest`);
+  const response = await fetch(`${base}/latest`, { headers: relayHeaders() });
   if (!response.ok) throw new Error(`update lookup failed (${response.status})`);
   const body = (await response.json()) as { tag?: string; assets?: string[] };
   if (!body.tag) throw new Error("update lookup returned no tag");
@@ -140,7 +145,7 @@ async function readLatest(base: string): Promise<ReleaseInfo> {
 
 /** Streamed to disk and hashed on the way, so a 90 MiB program is never held in memory. */
 async function download(url: string, file: string): Promise<string> {
-  const response = await fetch(url);
+  const response = await fetch(url, { headers: relayHeaders() });
   if (!response.ok || !response.body) throw new Error(`update download failed (${response.status})`);
   const digest = createHash("sha256");
   const out = createWriteStream(file);

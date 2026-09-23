@@ -7,6 +7,11 @@ export class RateCounters {
   allow(ip: string, kind: "create" | "miss", now: number): boolean {
     const limit = kind === "create" ? MAX_CREATES_PER_MIN : MAX_MISSES_PER_MIN;
     const window = Math.floor(now / RATE_WINDOW_MS);
+    // Counting is done a minute at a time, so nothing older is worth keeping — and keeping it
+    // would mean holding every address that ever arrived for as long as the process runs.
+    for (const [key, seen] of this.windows) {
+      if (seen.window < window) this.windows.delete(key);
+    }
     const key = `${ip}:${kind}`;
     const current = this.windows.get(key);
     if (!current || current.window !== window) {

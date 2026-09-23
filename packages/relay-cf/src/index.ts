@@ -12,9 +12,13 @@ import {
   rateShard,
   roomIdFromCode,
   safeEqual,
+  tokenDigest,
 } from "@agenthop/tunnel";
 
 type Attachment = { role: "host"; ready: boolean; code: string; publicBase: string };
+
+/** A day's worth of salt. Rotating it means yesterday's counters cannot be matched to anyone. */
+const SALT_MS = 24 * 60 * 60 * 1000;
 
 export class RateLimit extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
@@ -23,13 +27,20 @@ export class RateLimit extends DurableObject<Env> {
       this.ctx.storage.sql.exec(
         "CREATE TABLE IF NOT EXISTS counters (k TEXT PRIMARY KEY, window INTEGER NOT NULL, n INTEGER NOT NULL)",
       );
+      this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS salt (day INTEGER PRIMARY KEY, value TEXT NOT NULL)");
     });
   }
 
-  allow(ip: string, kind: "create" | "miss"): boolean {
+  /**
+   * Counting how often an address arrives does not require keeping the address. The key is a
+   * salted digest and the salt turns over daily; rows from earlier minutes are dropped on the
+   * way past, so at any moment this holds one minute of counters and nothing else.
+   */
+  async allow(ip: string, kind: "create" | "miss"): Promise<boolean> {
     const limit = kind === "create" ? 10 : 60;
     const window = Math.floor(Date.now() / 60_000);
-    const key = `${ip}:${kind}`;
+    this.ctx.storage.sql.exec("DELETE FROM counters WHERE window < ?", window);
+    const key = await this.key(ip, kind);
     const row = this.ctx.storage.sql
       .exec<{ window: number; n: number }>("SELECT window, n FROM counters WHERE k = ?", key)
       .toArray()[0];
@@ -44,6 +55,21 @@ export class RateLimit extends DurableObject<Env> {
     if (row.n >= limit) return false;
     this.ctx.storage.sql.exec("UPDATE counters SET n = n + 1 WHERE k = ?", key);
     return true;
+  }
+
+  private async key(ip: string, kind: string): Promise<string> {
+    const day = Math.floor(Date.now() / SALT_MS);
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${this.salt(day)}:${ip}:${kind}`));
+    return [...new Uint8Array(digest).subarray(0, 16)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+
+  private salt(day: number): string {
+    const row = this.ctx.storage.sql.exec<{ value: string }>("SELECT value FROM salt WHERE day = ?", day).toArray()[0];
+    if (row) return row.value;
+    const fresh = [...crypto.getRandomValues(new Uint8Array(16))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    this.ctx.storage.sql.exec("DELETE FROM salt WHERE day < ?", day);
+    this.ctx.storage.sql.exec("INSERT OR REPLACE INTO salt (day, value) VALUES (?, ?)", day, fresh);
+    return fresh;
   }
 }
 
@@ -68,14 +94,22 @@ export class Room extends DurableObject<Env> {
     if (!attachment) return;
     if (!attachment.ready) {
       const text = typeof message === "string" ? message : new TextDecoder().decode(message);
+      let token: string | undefined;
       try {
         const control = decodeControl(text);
         if (control.type !== "open" || normalizeCode(control.code) !== normalizeCode(attachment.code)) {
           this.reject(ws, "invalid_code");
           return;
         }
+        token = control.token;
       } catch {
         this.reject(ws, "invalid_code");
+        return;
+      }
+      if (!(await this.claim(token))) {
+        // Someone else opened this room first. Holding the code is not enough to take it over.
+        ws.send(encodeControl({ v: 1, type: "error", code: "room_taken" }));
+        ws.close(1008, "room_taken");
         return;
       }
       ws.serializeAttachment({ ...attachment, ready: true });
@@ -95,6 +129,7 @@ export class Room extends DurableObject<Env> {
 
   async alarm(): Promise<void> {
     this.log("idle");
+    this.ctx.storage.sql.exec("DELETE FROM meta WHERE k = 'host'");
     for (const ws of this.ctx.getWebSockets()) ws.close(1000, "idle");
     this.session?.close();
     this.session = null;
@@ -123,6 +158,7 @@ export class Room extends DurableObject<Env> {
     if (!host) return new Response("not found", { status: 404 });
     // Reading is polled once a second; writing into someone's room is what needs a ceiling.
     if (request.method !== "GET" && request.method !== "HEAD" && !this.posts.allow(Date.now())) {
+      this.log("rate_limited");
       return new Response("rate_limited", { status: 429 });
     }
     const length = Number(request.headers.get("content-length") ?? "0");
@@ -141,6 +177,10 @@ export class Room extends DurableObject<Env> {
       for (const [name, value] of forwarded.headers) headers.set(name, value);
       return new Response(forwarded.body, { status: forwarded.status, headers });
     } catch (error) {
+      if (error instanceof TunnelError && error.code === "room_quota") {
+        this.log("quota");
+        return new Response("room_quota", { status: 429 });
+      }
       const status = error instanceof TunnelError && error.code === "body_too_large" ? 413 : 502;
       return new Response(error instanceof Error ? error.message : "failed", { status });
     }
@@ -162,6 +202,21 @@ export class Room extends DurableObject<Env> {
       const attachment = ws.deserializeAttachment() as Attachment | null;
       return attachment?.ready === true;
     });
+  }
+
+  /**
+   * The first host to open a room fixes who may hold it. A host that reconnects shows the same
+   * token; anyone else is turned away even though the socket is free. A host from an older
+   * version brings no token and the room stays as open as it was before.
+   */
+  private async claim(token: string | undefined): Promise<boolean> {
+    const held = this.ctx.storage.sql.exec<{ v: string }>("SELECT v FROM meta WHERE k = 'host'").toArray()[0];
+    if (!held) {
+      if (token) this.ctx.storage.sql.exec("INSERT OR REPLACE INTO meta (k, v) VALUES ('host', ?)", await tokenDigest(token));
+      return true;
+    }
+    if (!token) return false;
+    return safeEqual(held.v, await tokenDigest(token));
   }
 
   private reject(ws: WebSocket, code: "invalid_code"): void {
@@ -216,11 +271,13 @@ async function releaseResponse(url: URL): Promise<Response | null> {
 export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
-    const release = await releaseResponse(url);
-    if (release) return release;
+    // A relay with a password is private in every respect, the download proxy included:
+    // otherwise it hands its bandwidth to anyone who asks.
     if (env.RELAY_PASS && !safeEqual(request.headers.get("authorization") ?? "", `Bearer ${env.RELAY_PASS}`)) {
       return new Response("unauthorized", { status: 401 });
     }
+    const release = await releaseResponse(url);
+    if (release) return release;
     const ip = request.headers.get("cf-connecting-ip") ?? "local";
     if (url.pathname.startsWith("/host/")) {
       const code = normalizeCode(decodeURIComponent(url.pathname.slice("/host/".length)));

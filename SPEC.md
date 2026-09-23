@@ -11,8 +11,13 @@ Text frames, JSON, `v` is `1`.
 Host to relay:
 
 ```json
-{"v":1,"type":"open","code":"4821-amber-river-maple"}
+{"v":1,"type":"open","code":"4821-amber-river-maple","token":"9Qw...bA"}
 ```
+
+`token` is optional and opaque to the relay. The first host to open a room fixes it: the relay
+keeps only its SHA-256 and requires the same token from any later host socket for that room.
+A host that sends no token leaves the room as open as it was before, which is what a host from
+an older version does.
 
 Relay to host:
 
@@ -60,10 +65,23 @@ When the response path is `/.well-known/agent-card.json`, the relay rewrites eve
 
 The room id is the first 10 bytes of SHA-256 over the normalized code, encoded as lowercase base32. Normalization is NFKC, trim, casefold, then split on any run of characters that are not letters or digits.
 
-One host socket per room. A second host gets `room_taken`. Anyone who has the code can send HTTP to `/r/<code>/...`.
+One host socket per room. A second host gets `room_taken`, and so does a later host whose
+`token` does not match the one that opened the room — a socket that has gone away does not make
+the room available to whoever asks next.
+
+Anyone who has the code can send HTTP to `/r/<code>/...`. The code is the only credential: this
+version has no end-to-end encryption, so holding it is enough to read the conversation.
 
 A room closes after 10 minutes with no frames and no HTTP. The next request is `404`.
 
+One room may carry 64 MiB while it lives, counting both directions. Past that the relay answers
+`429` and the room is spent. This is the relay's own ceiling: the conversation has a smaller one
+that the host applies to itself, and a client that does not play along would otherwise spend the
+operator's bandwidth without limit.
+
 Each IP may open 10 host sockets per minute and may receive 60 responses for a missing code per minute. Further attempts are `429`. A self-hosted relay with `--pass` requires `Authorization: Bearer <secret>` and answers `401` without it.
 
-The relay log records the time and an event name. It does not record the code, the card, or message bodies.
+The relay log records the time and an event name. It does not record the code, the card, or
+message bodies. Rate counting keys on a salted digest of the address rather than the address,
+the salt turns over daily, and counters older than the current minute are dropped, so a relay
+holds one minute of counts and no addresses.

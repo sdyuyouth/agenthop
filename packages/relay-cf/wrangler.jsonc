@@ -4,7 +4,7 @@
   "account_id": "e392ede42e8ac4493aa6753865856dd6",
   "main": "src/index.ts",
   "compatibility_date": "2025-12-10",
-  "observability": { "enabled": false },
+  "observability": { "enabled": true },
   "workers_dev": true,
   "routes": [{ "pattern": "agenthop.imatrix.tech", "custom_domain": true }],
   "durable_objects": {

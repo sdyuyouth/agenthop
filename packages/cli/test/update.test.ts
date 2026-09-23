@@ -12,6 +12,7 @@ const servers: Server[] = [];
 afterEach(() => {
   vi.restoreAllMocks();
   delete process.env.AGENTHOP_RELEASES_BASE;
+  delete process.env.AGENTHOP_PASS;
   for (const server of servers.splice(0)) server.close();
 });
 
@@ -121,8 +122,39 @@ describe("update", () => {
   });
 });
 
-async function serve(routes: Record<string, string | Buffer>): Promise<string> {
+describe("a relay with a password", () => {
+  it("is private for downloads too, and update carries the password", async () => {
+    const asked: (string | undefined)[] = [];
+    const base = await serve({}, (headers) => {
+      asked.push(headers.authorization);
+      return headers.authorization === "Bearer secret";
+    });
+    const dir = await mkdtemp(path.join(tmpdir(), "agenthop-update-"));
+    const target = path.join(dir, "agenthop");
+    await writeFile(target, "the program that works");
+
+    await expect(updateAgenthop({ base, target, force: true })).rejects.toThrow();
+    expect(asked.at(-1)).toBeUndefined();
+
+    process.env.AGENTHOP_PASS = "secret";
+    await expect(updateAgenthop({ base, target, force: true })).rejects.toThrow();
+    expect(asked.at(-1)).toBe("Bearer secret");
+    expect(await readFile(target, "utf8")).toBe("the program that works");
+  });
+});
+
+
+
+async function serve(
+  routes: Record<string, string | Buffer>,
+  authorized?: (headers: Record<string, string | undefined>) => boolean,
+): Promise<string> {
   const server = createServer((request, response) => {
+    if (authorized && !authorized(request.headers as Record<string, string | undefined>)) {
+      response.writeHead(401);
+      response.end("unauthorized");
+      return;
+    }
     const body = routes[(request.url ?? "").split("?")[0] ?? ""];
     if (body === undefined) {
       response.writeHead(404);

@@ -8,16 +8,22 @@ import {
   splitChunks,
   type HeaderPair,
 } from "./frame.js";
-import { RESPONSE_START_TIMEOUT_MS } from "./limits.js";
-import { MAX_BODY } from "./limits.js";
+import { MAX_BODY, MAX_ROOM_BYTES, RESPONSE_START_TIMEOUT_MS } from "./limits.js";
 
 export type ControlMessage =
-  | { v: 1; type: "open"; code: string }
+  /** `token` proves a later socket is the same host. Older hosts send none. */
+  | { v: 1; type: "open"; code: string; token?: string }
   | { v: 1; type: "ready"; publicBase: string }
   | { v: 1; type: "error"; code: "room_taken" | "invalid_code" | "unauthorized" | "rate_limited" };
 
 export function encodeControl(message: ControlMessage): string {
   return JSON.stringify(message);
+}
+
+/** The hash a relay stores so a later socket can prove it is the same host. */
+export async function tokenDigest(token: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 export function decodeControl(text: string): ControlMessage {
@@ -61,15 +67,23 @@ export class RelaySession {
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
   private failed = false;
+  private spent = 0;
 
   constructor(
     private readonly send: (data: Uint8Array | string) => void,
     readonly publicBase: string,
     private readonly responseTimeoutMs = RESPONSE_START_TIMEOUT_MS,
+    private readonly roomBytes = MAX_ROOM_BYTES,
   ) {}
+
+  /** What this room has carried so far, both directions. */
+  get bytes(): number {
+    return this.spent;
+  }
 
   forward(request: ForwardRequest): Promise<ForwardResponse> {
     assertSafePath(request.path);
+    if (this.spent >= this.roomBytes) return Promise.reject(new TunnelError("room_quota"));
     const requestId = this.nextId++;
     const pending: Pending = {
       start: deferred(),
@@ -93,6 +107,7 @@ export class RelaySession {
         pending.start.resolve({ status: frame.status, headers: frame.headers });
         break;
       case "response-body":
+        this.spent += frame.body.byteLength;
         if (pending.card) pending.cardChunks.push(frame.body);
         else pending.stream.push(frame.body);
         break;
@@ -142,7 +157,9 @@ export class RelaySession {
           const step = await reader.read();
           if (step.done) break;
           total += step.value.byteLength;
+          this.spent += step.value.byteLength;
           if (total > MAX_BODY) throw new TunnelError("body_too_large");
+          if (this.spent > this.roomBytes) throw new TunnelError("room_quota");
           for (const chunk of splitChunks(step.value)) {
             this.send(encodeFrame({ type: "request-body", requestId, body: chunk }));
           }

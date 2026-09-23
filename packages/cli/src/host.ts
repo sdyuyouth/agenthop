@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import path from "node:path";
 import { homedir } from "node:os";
@@ -49,6 +50,9 @@ export type RunningHost = {
 
 export async function startHost(options: HostOptions = {}): Promise<RunningHost> {
   const code = options.code ?? generateCode();
+  // One token for the life of the room. Reopening the room after a blip shows the same one, so
+  // the relay can tell the host coming back from someone else who picked up the code.
+  const token = randomBytes(32).toString("base64url");
   const relay = options.relay ?? process.env.AGENTHOP_RELAY ?? DEFAULT_RELAY;
   const home = options.home ?? path.join(homedir(), ".agenthop");
   const { publicBase, hostUrl } = relayEndpoints(relay, code);
@@ -107,7 +111,7 @@ export async function startHost(options: HostOptions = {}): Promise<RunningHost>
           else reject(new Error("bad_control"));
         });
       });
-      ws.send(JSON.stringify({ v: 1, type: "open", code }));
+      ws.send(JSON.stringify({ v: 1, type: "open", code, token }));
       const opened = await ready;
       ws.on("message", (data, isBinary) => {
         if (!isBinary) return;
@@ -187,7 +191,7 @@ function relayError(error: unknown, relay: string): Error {
 }
 
 function openError(code: string): string {
-  if (code === "room_taken") return "这个配对码已经有人在用了，换一个新的房间";
+  if (code === "room_taken") return "这个房间已经被另一个进程占着了。如果不是你自己开的第二个，就换一个新的配对码";
   if (code === "unauthorized") return "中继需要密码，两边都要加 --pass";
   if (code === "rate_limited") return "开房太频繁，等一分钟再试";
   return code;
