@@ -97,17 +97,63 @@ try {
     process.on("SIGINT", () => {
       void running.close().then(() => process.exit(0));
     });
+  } else if (flags.help || command === "help" || command === "") {
+    printHelp();
   } else {
-    console.log("usage: agenthop --agent <command> <背景>");
-    console.log("       agenthop <code> --agent <command>");
-    console.log("       agenthop install [--skill-dir DIR]");
-    console.log("       agenthop update [--check] [--force]");
-    console.log("       agenthop relay [--listen HOST:PORT] [--pass SECRET]");
-    process.exit(command ? 1 : 0);
+    printHelp();
+    process.exit(1);
   }
 } catch (error) {
   console.error(error instanceof Error ? error.message : error);
   process.exit(1);
+}
+
+function printHelp(): void {
+  const lines = [
+    "对话",
+    "  agenthop --agent <命令> <任务背景>",
+    "  agenthop <配对码> --agent <命令>",
+    "  没有配对码就创建房间，并写出配对码。任务背景作为 hello 发给加入方。",
+    "  有配对码就加入。加入方的命令读到 hello，自己判断是否和当前上下文相符。",
+    "  相符：标准输出写下确认，退出码 0。创建方收到后通道才 ready。",
+    "  不相符：询问用户，不写确认。通道不就绪。",
+    "  ready 之后，只有对方新的一句会再启动命令。本方自己写出的行不会。",
+    "  标准输入是日志中的那一行。标准输出有正文且退出码为 0 才送出下一句。",
+    "  日志：<家目录>/.agenthop/sessions/<配对码>.log",
+    "  每行：<时间> <local|peer> <状态> <正文>",
+    "  状态：waiting connected hello confirm ready say",
+    "",
+    "安装",
+    "  下载 https://github.com/sdyuyouth/agenthop/releases/latest",
+    "  macOS Apple 芯片    agenthop-macos-arm64",
+    "  macOS Intel         agenthop-macos-x64",
+    "  Linux x64           agenthop-linux-x64",
+    "  Linux ARM64         agenthop-linux-arm64",
+    "  Windows 64 位       agenthop-windows-x64.exe",
+    "  没有 Windows ARM 包。",
+    "  macOS / Linux：chmod +x <文件>，再执行 <文件> install --skill-dir <技能目录>",
+    "  命令装到 ~/.local/bin/agenthop。新开的终端才能直接用 agenthop。",
+    "  Windows PowerShell：.\\agenthop-windows-x64.exe install --skill-dir <技能目录>",
+    "  命令装到 %LOCALAPPDATA%\\agenthop\\agenthop.exe，并写入用户 PATH。新开的终端才能直接用 agenthop。",
+    "  --skill-dir 可重复。每个目录写入一份 SKILL.md。另外总会写到 <家目录>/.agenthop/SKILL.md。",
+    "  Windows 的家目录是 %USERPROFILE%。",
+    "",
+    "更新",
+    "  agenthop update",
+    "  agenthop update --check     只查询，不安装",
+    "  agenthop update --force     版本相同也重新安装",
+    "  upgrade 与 self-update 相同。",
+    "  v0.1.6 之前的程序没有 update，需要先换一次当前发布的文件。",
+    "",
+    "中继",
+    "  默认 https://agenthop.imatrix.tech",
+    "  --relay URL 或环境变量 AGENTHOP_RELAY",
+    "  自建时两边都加 --pass SECRET",
+    "  agenthop relay [--listen HOST:PORT] [--pass SECRET]",
+    "",
+    "  agenthop help",
+  ];
+  for (const line of lines) writeLine(line);
 }
 
 function printEvent(event: SessionEvent, json: boolean): void {
@@ -164,15 +210,17 @@ type Flags = {
   agent?: string;
   check: boolean;
   force: boolean;
+  help: boolean;
   json: boolean;
 };
 
 function parseArgs(args: string[]): { flags: Flags; positionals: string[] } {
-  const flags: Flags = { files: [], skillDirs: [], ask: false, supplement: false, check: false, force: false, json: false };
+  const flags: Flags = { files: [], skillDirs: [], ask: false, supplement: false, check: false, force: false, help: false, json: false };
   const positionals: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--json") flags.json = true;
+    else if (arg === "--help" || arg === "-h") flags.help = true;
     else if (arg === "--relay") flags.relay = args[++i];
     else if (arg === "--pass") flags.pass = args[++i];
     else if (arg === "--listen") flags.listen = args[++i];

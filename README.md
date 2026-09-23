@@ -1,78 +1,128 @@
 # agenthop
 
-Two agents on two machines, neither with a public address. One person runs `host` and reads a short code aloud. The other person's A2A client uses that code. The conversation is [A2A](https://a2a-protocol.org/latest/specification/) JSON-RPC. agenthop only supplies the pairing and the relay.
+两台没有公网地址的机器，各有一个 agent。一条命令完成配对、确认背景和后续对话。默认中继是 `https://agenthop.imatrix.tech`。
 
-成品在 GitHub Release，不需要克隆仓库，也不需要 Node.js。下载对应系统的文件后执行一次安装：
+成品在 GitHub Release。下载对应系统的文件后安装一次，不需要克隆仓库，也不需要 Node.js。
 
 https://github.com/sdyuyouth/agenthop/releases/latest
-
-```bash
-chmod +x agenthop-macos-arm64   # Linux 同样；Windows 用 agenthop-windows-x64.exe
-./agenthop-macos-arm64 install --skill-dir <技能目录>
-```
-
-`install` 把命令放到 PATH，并把 `SKILL.md` 写到 `~/.agenthop/SKILL.md`。`--skill-dir` 可重复，每次把同一份 `SKILL.md` 写进调用方自己的技能目录。装好以后用 `agenthop update` 换成新版本，`--check` 只查询，`--force` 重新安装。`upgrade` 和 `self-update` 相同。已提供的文件：
 
 | 文件 | 系统 |
 |---|---|
 | `agenthop-macos-arm64` | macOS Apple 芯片 |
 | `agenthop-macos-x64` | macOS Intel |
 | `agenthop-linux-x64` | Linux x64 |
-| `agenthop-linux-arm64` | Linux ARM |
+| `agenthop-linux-arm64` | Linux ARM64 |
 | `agenthop-windows-x64.exe` | Windows 64 位 |
 
-对话用一条命令。没有短码就创建房间并写出配对码，后面的文字是任务背景。有短码就加入。
+没有 Windows ARM 包。
+
+## macOS
+
+Apple 芯片用 `agenthop-macos-arm64`，Intel 用 `agenthop-macos-x64`。
+
+```bash
+chmod +x agenthop-macos-arm64
+./agenthop-macos-arm64 install --skill-dir <技能目录>
+```
+
+Intel 把文件名换成 `agenthop-macos-x64`。命令装到 `~/.local/bin/agenthop`。新开一个终端后可以直接运行 `agenthop`。
+
+会话日志在 `~/.agenthop/sessions/<配对码>.log`。技能副本在 `~/.agenthop/SKILL.md`。
+
+## Linux
+
+x64 用 `agenthop-linux-x64`，ARM64 用 `agenthop-linux-arm64`。
+
+```bash
+chmod +x agenthop-linux-x64
+./agenthop-linux-x64 install --skill-dir <技能目录>
+```
+
+ARM64 把文件名换成 `agenthop-linux-arm64`。命令装到 `~/.local/bin/agenthop`。新开一个终端后可以直接运行 `agenthop`。
+
+会话日志在 `~/.agenthop/sessions/<配对码>.log`。技能副本在 `~/.agenthop/SKILL.md`。
+
+## Windows
+
+在 PowerShell 里执行。不要用 `chmod`。
+
+```powershell
+.\agenthop-windows-x64.exe install --skill-dir <技能目录>
+```
+
+命令装到 `%LOCALAPPDATA%\agenthop\agenthop.exe`，并把这个目录写入用户 PATH。新开一个终端后可以直接运行 `agenthop`。
+
+会话日志在 `%USERPROFILE%\.agenthop\sessions\<配对码>.log`。技能副本在 `%USERPROFILE%\.agenthop\SKILL.md`。
+
+## 安装选项
+
+`--skill-dir` 可重复。每个目录写入一份 `SKILL.md`。无论是否指定，都会再写一份到家目录下的 `.agenthop/SKILL.md`。
+
+已经安装过、并且程序版本至少是 v0.1.6 时：
+
+```bash
+agenthop update
+agenthop update --check
+agenthop update --force
+```
+
+`--check` 只查询，不安装。`--force` 在版本相同的时候也重新安装。`upgrade` 和 `self-update` 与 `update` 相同。v0.1.5 及更早的程序没有 `update`，先下载当前发布的文件换上。
+
+不带参数，或执行 `agenthop help`，会打印完整用法。
+
+## 对话
+
+创建房间。后面的文字是本方的任务背景，会作为 hello 发给加入方：
 
 ```bash
 agenthop --agent "<命令>" "<任务背景>"
-agenthop 4821-amber-river-maple --agent "<命令>"
 ```
 
-创建方把背景作为 hello 发出。加入方的命令读到 hello，自己判断是否和当前上下文相符。相符就输出确认，创建方收到后通道才就绪。不相符就询问用户，并且不回复。
-
-过程在 `~/.agenthop/sessions/<配对码>.log`。每行是 `<时间> <local|peer> <状态> <正文>`。通道就绪后，只有对方新的一句会再启动命令。
-
-`--json` 时每行一个事件。`current` 是正在做的那条，`pending` 是还没轮到的编号。`said` 是一句不需要结果的话，已经轮到。`done` 是这条要结果的消息已经有了结果。`supplement` 是并进当前这件的补充。`queued` 是已经入队、还没轮到。
-
-不需要结果的话马上返回。要结果就加 `--ask`，命令等到这个编号的结果。把结果交回给正在做的那条用 `--answer`。给正在做的事情补一句用 `--supplement`。挂着房间的一方省略短码：
+标准输出里的 `waiting` 行带有配对码。对方加入：
 
 ```bash
-agenthop send 4821-amber-river-maple "先看接口" 
-agenthop send 4821-amber-river-maple "接口怎么定" --ask --file ./draft.md
-agenthop send --answer <id> "接口继续用 JSON-RPC" --file ./decision.md
-agenthop send "把测试也算上" --supplement
+agenthop <配对码> --agent "<命令>"
 ```
 
-`--ask` 的结果文字打在标准输出，附件写到 `agenthop-out/`，路径打在标准错误。`--json` 把这一次发送的结果合成一个 JSON。`agenthop queue` 看当前这一条和后面排着的编号。
+加入方的命令从标准输入读到 hello 那一行，自己判断背景是否和当前上下文相符。相符就写出确认，退出码为 0。创建方收到确认后，日志出现 `ready`。不相符就询问用户，并且不写确认，通道不会就绪。
 
-## Relay
+`ready` 之后，日志里出现对方新的一句时，才再次启动命令。本方自己写出的行不会启动命令。标准输入是这一行。标准输出有正文，并且退出码为 0，才把下一句送出。
 
-The default relay is `https://agenthop.imatrix.tech`. Override it with `--relay` or `AGENTHOP_RELAY`.
+日志每行的格式是：
 
-Self-host the same protocol:
+```text
+<时间> <local|peer> <状态> <正文>
+```
+
+状态依次是 `waiting`、`connected`、`hello`、`confirm`、`ready`、`say`。
+
+换中继：
 
 ```bash
-pnpm --filter @agenthop/cli exec tsx src/bin.ts relay --listen 127.0.0.1:8787 --pass secret
+agenthop --relay https://example.test --agent "<命令>" "<任务背景>"
 ```
 
-`--pass` requires `Authorization: Bearer secret` from both sides (`agenthop host --pass`, `agenthop send --pass`).
+也可以设置环境变量 `AGENTHOP_RELAY`。自建中继并且设置了密码时，两边都加上 `--pass <密码>`。
 
-Deploy the Workers relay from `packages/relay-cf`:
+## 自建中继
+
+```bash
+agenthop relay --listen 127.0.0.1:8787 --pass secret
+```
+
+两边使用：
+
+```bash
+agenthop --relay http://127.0.0.1:8787 --pass secret --agent "<命令>" "<任务背景>"
+```
+
+Workers 中继的部署在 `packages/relay-cf`：
 
 ```bash
 pnpm --filter @agenthop/relay-cf exec wrangler deploy
-```
-
-Set `AGENTHOP_RELAY` to the deployed URL. Optional relay password:
-
-```bash
 pnpm --filter @agenthop/relay-cf exec wrangler secret put RELAY_PASS
 ```
 
-## What the relay can see
+房间在 10 分钟没有转发后消失。短码就是进入这个房间的凭证。使用 Cloudflare 上的中继时，TLS 在 Cloudflare 终结，中继可以读到消息正文。这一版没有端到端加密。
 
-TLS ends at Cloudflare when you use the Workers deployment, so that relay can read the A2A JSON. The short code is the capability: anyone who has it can ask until the room goes idle. A room is removed after 10 minutes without traffic. There is no end-to-end encryption in this version.
-
-Hibernating WebSockets are used (`acceptWebSocket`, attachment stores the host role). The Worker above is the deployed relay.
-
-The tunnel itself is specified in [SPEC.md](SPEC.md).
+隧道格式见 [SPEC.md](SPEC.md)。
