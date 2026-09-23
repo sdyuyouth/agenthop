@@ -181,6 +181,26 @@ describe("node relay", () => {
     expect(await over.text()).toContain("room_quota");
     host.close();
   });
+
+  it("forgets the room, and the token that held it, once it expires", async () => {
+    // A room outlives its socket so its host can come back. Something has to end it, or a
+    // pairing code that comes round again finds its own room already claimed by a token
+    // nobody has any more.
+    const relay = await startRelay({ idleMs: 200 });
+    openRelays.push(relay);
+    const code = "1111-acid-acorn-acre";
+
+    const first = await connectHost(relay.url, code, undefined, "the-first-token");
+    first.close();
+    await new Promise((resolve) => setTimeout(resolve, 700));
+
+    const later = await step(
+      "a later host opens the same code",
+      connectHost(relay.url, code, undefined, "a-token-from-the-next-room"),
+    );
+    expect((await fetch(`${relay.url}/r/${code}/`)).status).toBe(200);
+    later.close();
+  });
 });
 
 /** A hung await should say which one it was, not just that the test ran out of time. */

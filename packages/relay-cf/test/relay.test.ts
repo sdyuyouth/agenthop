@@ -1,5 +1,5 @@
 import { SELF, env, runInDurableObject } from "cloudflare:test";
-import { rateShard } from "@agenthop/tunnel";
+import { rateShard, roomIdFromCode } from "@agenthop/tunnel";
 import { describe, expect, it } from "vitest";
 
 describe("workers relay", () => {
@@ -39,5 +39,23 @@ describe("workers relay", () => {
     // The address itself is never written down, and only the current minute is kept.
     expect(rows.some((row) => row.k.includes(ip))).toBe(false);
     expect(new Set(rows.map((row) => row.window)).size).toBe(1);
+  });
+
+  it("forgets which host held a room once the room is over", async () => {
+    // A code that comes round again must be free to open. Keeping the claim past the room
+    // would lock a later host out of a room it opened itself, with a token nobody has.
+    const code = "3333-acid-acorn-acre";
+    const stub = env.ROOM.getByName(await roomIdFromCode(code));
+
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)");
+      state.storage.sql.exec("INSERT OR REPLACE INTO meta (k, v) VALUES ('host', 'a-digest-from-the-last-room')");
+    });
+    await runInDurableObject(stub, (instance) => (instance as unknown as { alarm(): Promise<void> }).alarm());
+
+    const left = await runInDurableObject(stub, (_instance, state) =>
+      state.storage.sql.exec<{ k: string }>("SELECT k FROM meta WHERE k = 'host'").toArray(),
+    );
+    expect(left).toEqual([]);
   });
 });

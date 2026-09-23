@@ -246,25 +246,34 @@ export async function startRelay(options: RelayOptions = {}): Promise<RunningRel
   if (!address || typeof address === "string") throw new Error("listen_failed");
   const url = `http://${options.listenHost ?? "127.0.0.1"}:${address.port}`;
 
+  const sweep = (): void => {
+    const current = now();
+    for (const [id, room] of rooms) {
+      if (current >= room.deadline) {
+        room.socket?.close(1000, "idle");
+        room.session?.close();
+        rooms.delete(id);
+      }
+    }
+  };
+  // A room outlives its socket so the host that opened it can come back, which means something
+  // has to end it. Nothing did: expired rooms stayed in memory holding the token that opened
+  // them, and a pairing code that came round again would find its own room already claimed.
+  const sweeper = setInterval(sweep, Math.max(50, Math.min(idleMs, 30_000)));
+  sweeper.unref?.();
+
   return {
     url,
     port: address.port,
-    sweep() {
-      const current = now();
-      for (const [id, room] of rooms) {
-        if (current >= room.deadline) {
-          room.socket?.close(1000, "idle");
-          room.session?.close();
-          rooms.delete(id);
-        }
-      }
-    },
-    close: () =>
-      new Promise((resolve, reject) => {
+    sweep,
+    close: () => {
+      clearInterval(sweeper);
+      return new Promise((resolve, reject) => {
         for (const room of rooms.values()) room.socket?.close();
         wss.close();
         server.close((error) => (error ? reject(error) : resolve()));
-      }),
+      });
+    },
   };
 }
 
