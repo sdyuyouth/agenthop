@@ -2,7 +2,7 @@
 
 每个版本的完整说明在 [Releases](https://github.com/sdyuyouth/agenthop/releases)。这里只留下变了什么。
 
-## 未发布
+## v0.3.4
 
 中继安全加固。端到端加密仍然没有做，拿到配对码的人依旧能读到全部对话——[SECURITY.md](SECURITY.md) 里那张表是准确的边界。
 
