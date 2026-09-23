@@ -131,13 +131,22 @@ export async function startRelay(options: RelayOptions = {}): Promise<RunningRel
       socket.destroy();
       return;
     }
-    wss.handleUpgrade(req, socket, head, (ws) => {
-      void attachHost(ws, normalizeCode(code), url);
-    });
+    // The room id is worked out before the socket is accepted. Once it is accepted the first
+    // frame can arrive at any moment, and a listener attached after an await would miss it —
+    // the host would then wait for a `ready` that never comes.
+    const normalized = normalizeCode(code);
+    void roomIdFromCode(normalized).then(
+      (roomId) => wss.handleUpgrade(req, socket, head, (ws) => attachHost(ws, roomId, normalized, url)),
+      // A 400 above means the code in the URL was wrong. This one means the room id could not
+      // be worked out, which is ours to answer for.
+      () => {
+        socket.write("HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\n\r\n");
+        socket.destroy();
+      },
+    );
   });
 
-  async function attachHost(ws: WebSocket, code: string, requestUrl: URL): Promise<void> {
-    const roomId = await roomIdFromCode(code);
+  function attachHost(ws: WebSocket, roomId: string, code: string, requestUrl: URL): void {
     const existing = rooms.get(roomId);
     if (existing?.socket && existing.socket.readyState === WebSocket.OPEN) {
       ws.send(encodeControl({ v: 1, type: "error", code: "room_taken" }));

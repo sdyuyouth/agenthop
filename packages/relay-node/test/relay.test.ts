@@ -107,6 +107,29 @@ describe("node relay", () => {
     expect(read.status).not.toBe(429);
     await read.arrayBuffer();
   });
+
+  it("answers a host that speaks the moment the socket opens", async () => {
+    const relay = await startRelay();
+    openRelays.push(relay);
+    const code = "1111-acid-acorn-acre";
+    // The open frame is sent in the same tick as the socket opening, which is what a real host
+    // does. Anything the relay does asynchronously before listening would drop it.
+    const ws = new WebSocket(`${relay.url.replace("http", "ws")}/host/${code}`);
+    const ready = new Promise<string>((resolve, reject) => {
+      ws.once("message", (data) => resolve(data.toString()));
+      ws.once("error", reject);
+    });
+    await new Promise<void>((resolve, reject) => {
+      ws.once("open", () => {
+        ws.send(JSON.stringify({ v: 1, type: "open", code }));
+        resolve();
+      });
+      ws.once("error", reject);
+    });
+
+    expect(JSON.parse(await step("the relay answers ready", ready)).type).toBe("ready");
+    ws.close();
+  });
 });
 
 /** A hung await should say which one it was, not just that the test ran out of time. */

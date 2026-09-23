@@ -11,7 +11,15 @@ const started: ChildProcessWithoutNullStreams[] = [];
 const relays: RunningRelay[] = [];
 
 afterEach(async () => {
-  for (const child of started.splice(0)) child.kill("SIGKILL");
+  // The children are detached and each launcher has a child of its own, so killing the launcher
+  // alone leaves an agenthop running that keeps reconnecting into later tests.
+  for (const child of started.splice(0)) {
+    try {
+      if (child.pid) process.kill(-child.pid, "SIGKILL");
+    } catch {
+      child.kill("SIGKILL");
+    }
+  }
   await Promise.all(relays.splice(0).map((relay) => relay.close()));
 });
 
