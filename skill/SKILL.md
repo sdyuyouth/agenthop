@@ -1,9 +1,9 @@
 ---
 name: agenthop
 description: >-
-  让两个不在同一台机器上的 agent 交换信息和结果。用户要和对方的 agent 配对、
-  收到形如 1234-word-word-word 的短码，或运行 /agenthop 时使用。
-  只调用本机 agenthop 命令。
+  让两个不在同一台机器上的 agent 交换信息。用户要配对、收到短码，或运行 /agenthop 时使用。
+  只用当前会话的一次工具调用启动 agenthop 并保持运行。对方的话从这条命令的标准输出读取，回复写进它的标准输入。
+  不要使用 --agent，不要写回复脚本，不要调用 claude -p 或其他非交互 agent。
 user-invocable: true
 ---
 
@@ -34,20 +34,28 @@ Windows 的命令装到 `%LOCALAPPDATA%\agenthop\agenthop.exe`。新开一个终
 
 ## 对话
 
-创建房间。后面的文字是本方任务背景，作为 hello 发出。标准输出的 `waiting` 行里有配对码：
+收发都发生在当前这个会话里。用一次工具调用启动下面的命令，并在整个对话期间保持这个进程。进程每写出一行，当前会话就读这一行；当前会话要说话时，把一行正文写进同一个进程的标准输入。
+
+这条命令不会在对方发来新消息时重新启动，也不会去调用 `claude -p`、`codex exec` 或其他 agent。不需要 `reply.ps1`、`reply.sh` 或任何回复脚本。`--agent` 不能使用。
+
+创建房间。后面的文字是本方任务背景，作为 hello 发出。标准输出的 `waiting` 行里有配对码，把配对码交给对方：
 
 ```bash
-agenthop --agent "<命令>" "<任务背景>"
+agenthop "<任务背景>"
 ```
 
-对方加入。hello 交给它的命令。命令对照自己的当前上下文判断背景是否属实。属实就在标准输出写下确认，退出码为 0。创建方收到确认后，日志才出现 `ready`。不属实就询问用户，并且不写确认。
+对方在他自己的当前会话里加入，同样保持进程不退出：
 
 ```bash
-agenthop <配对码> --agent "<命令>"
+agenthop <配对码>
 ```
+
+加入方的标准输出出现 `peer hello` 时，由这个会话里的 agent 判断背景是否和自己的上下文相符。相符就把一句确认写进标准输入。创建方的标准输出随后出现 `peer confirm` 和 `local ready`。不相符就在这个会话里询问用户，不要往标准输入写任何内容。
+
+`ready` 之后，对方再发来的一句会让同一进程再写出一行 `peer say`。当前会话读到后，把回复写进标准输入。程序送出后会再写一行 `local say`。这行是自己的记录，不要因此再启动进程或再开一个 agent。
+
+标准输入的每一行就是要送出的正文，不要加状态名，不要加 JSON。
 
 macOS 与 Linux 的日志在 `~/.agenthop/sessions/<配对码>.log`。Windows 在 `%USERPROFILE%\.agenthop\sessions\<配对码>.log`。每行是 `<时间> <local|peer> <状态> <正文>`。状态有 `waiting`、`connected`、`hello`、`confirm`、`ready`、`say`。
-
-`ready` 之后，只有新的 `peer say` 会再启动 `<命令>`。标准输入是这一整行。标准输出有正文且退出码为 0，才送出下一句。本方自己写出的行不会再次启动命令。
 
 默认中继是 `https://agenthop.imatrix.tech`。换中继用 `--relay URL` 或环境变量 `AGENTHOP_RELAY`。自建中继有密码时两边都加 `--pass <密码>`。房间在 10 分钟没有转发后消失。

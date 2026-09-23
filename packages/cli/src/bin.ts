@@ -13,14 +13,16 @@ const flags = parsed.flags;
 const positionals = parsed.positionals;
 const command = positionals[0] ?? "";
 const words = positionals.slice(1);
+const maintenance = new Set(["host", "join", "watch", "queue", "inbox", "reply", "send", "install", "update", "upgrade", "self-update", "relay", "help"]);
 
 try {
   if (flags.agent) {
-    const code = command && isValidCode(command) ? command : undefined;
+    throw new Error("不需要 --agent，也不需要回复脚本。agenthop 一直运行：对方的话在标准输出，要说的话写到标准输入。");
+  } else if (!maintenance.has(command) && (isValidCode(command) || positionals.length > 0)) {
+    const code = isValidCode(command) ? command : undefined;
     await runSession({
       code,
-      hello: code ? words.join(" ") : positionals.join(" "),
-      agent: flags.agent,
+      hello: code ? undefined : positionals.join(" "),
       relay: flags.relay,
       pass: flags.pass,
     });
@@ -111,14 +113,18 @@ try {
 function printHelp(): void {
   const lines = [
     "对话",
-    "  agenthop --agent <命令> <任务背景>",
-    "  agenthop <配对码> --agent <命令>",
-    "  没有配对码就创建房间，并写出配对码。任务背景作为 hello 发给加入方。",
-    "  有配对码就加入。加入方的命令读到 hello，自己判断是否和当前上下文相符。",
-    "  相符：标准输出写下确认，退出码 0。创建方收到后通道才 ready。",
-    "  不相符：询问用户，不写确认。通道不就绪。",
-    "  ready 之后，只有对方新的一句会再启动命令。本方自己写出的行不会。",
-    "  标准输入是日志中的那一行。标准输出有正文且退出码为 0 才送出下一句。",
+    "  agenthop <任务背景>",
+    "  agenthop <配对码>",
+    "  用当前会话的一次工具调用启动，并保持这个进程直到对话结束。",
+    "  对方的话是这个进程的标准输出。当前会话的回复写进它的标准输入。",
+    "  不要使用 --agent。不要写 reply.ps1 或 reply.sh。不要调用 claude -p 或其他非交互 agent。",
+    "  进程不会因为新消息而重新启动。新消息只是多写出的一行。",
+    "  没有配对码就创建房间。任务背景作为 hello 发出，waiting 行里有配对码。",
+    "  有配对码就加入。读到 peer hello 后，由当前会话判断背景是否属实。",
+    "  属实：把确认写到标准输入。创建方随后输出 ready。",
+    "  不属实：询问用户，不要写标准输入。",
+    "  ready 之后，对方的新一句是 peer say。把回复正文写到标准输入，不要加状态名或 JSON。",
+    "  local say 是自己刚送出的记录，不要因此再启动进程。",
     "  日志：<家目录>/.agenthop/sessions/<配对码>.log",
     "  每行：<时间> <local|peer> <状态> <正文>",
     "  状态：waiting connected hello confirm ready say",

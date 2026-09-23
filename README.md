@@ -72,21 +72,23 @@ agenthop update --force
 
 ## 对话
 
-创建房间。后面的文字是本方的任务背景，会作为 hello 发给加入方：
+当前会话用一次工具调用启动命令，并在整个对话期间保持这个进程。对方的话从标准输出读，回复写进同一个标准输入。进程不会因为新消息而重新启动。不要使用 `--agent`，不要写 `reply.ps1` 或 `reply.sh`，不要调用 `claude -p` 或其他非交互 agent。
+
+创建房间。后面的文字是任务背景，会作为 hello 发出：
 
 ```bash
-agenthop --agent "<命令>" "<任务背景>"
+agenthop "<任务背景>"
 ```
 
 标准输出里的 `waiting` 行带有配对码。对方加入：
 
 ```bash
-agenthop <配对码> --agent "<命令>"
+agenthop <配对码>
 ```
 
-加入方的命令从标准输入读到 hello 那一行，自己判断背景是否和当前上下文相符。相符就写出确认，退出码为 0。创建方收到确认后，日志出现 `ready`。不相符就询问用户，并且不写确认，通道不会就绪。
+标准输出出现 `peer hello` 后，由当前 agent 判断背景是否属实。属实就把确认写进标准输入，创建方随后输出 `ready`。不属实就询问用户，并且不写标准输入。
 
-`ready` 之后，日志里出现对方新的一句时，才再次启动命令。本方自己写出的行不会启动命令。标准输入是这一行。标准输出有正文，并且退出码为 0，才把下一句送出。
+`ready` 之后，对方的新一句是 `peer say`。当前 agent 把回复写进标准输入。
 
 日志每行的格式是：
 
@@ -99,7 +101,7 @@ agenthop <配对码> --agent "<命令>"
 换中继：
 
 ```bash
-agenthop --relay https://example.test --agent "<命令>" "<任务背景>"
+agenthop --relay https://example.test "<任务背景>"
 ```
 
 也可以设置环境变量 `AGENTHOP_RELAY`。自建中继并且设置了密码时，两边都加上 `--pass <密码>`。
@@ -113,7 +115,7 @@ agenthop relay --listen 127.0.0.1:8787 --pass secret
 两边使用：
 
 ```bash
-agenthop --relay http://127.0.0.1:8787 --pass secret --agent "<命令>" "<任务背景>"
+agenthop --relay http://127.0.0.1:8787 --pass secret "<任务背景>"
 ```
 
 Workers 中继的部署在 `packages/relay-cf`：

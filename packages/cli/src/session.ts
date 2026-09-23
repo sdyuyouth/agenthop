@@ -4,31 +4,46 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { relayEndpoints } from "@agenthop/tunnel";
 import { DEFAULT_RELAY, startHost, type RunningHost } from "./host.js";
-import { runAgent } from "./receive.js";
 import { readQueue, sendMessage } from "./send.js";
 import { type SessionEvent } from "./talk.js";
 
 const CONNECT = "[[agenthop:connect]]";
 
+export type LineSource = { take(): string[] };
+
 export type SessionOptions = {
   code?: string;
   hello?: string;
-  agent: string;
+  lines?: LineSource;
   relay?: string;
   pass?: string;
   home?: string;
   signal?: AbortSignal;
 };
 
+export function lineQueue(): LineSource & { push(text: string): void } {
+  const pending: string[] = [];
+  return {
+    push(text: string) {
+      const trimmed = text.trim();
+      if (trimmed) pending.push(trimmed);
+    },
+    take() {
+      return pending.splice(0);
+    },
+  };
+}
+
 export async function runSession(options: SessionOptions): Promise<void> {
   const home = options.home ?? path.join(homedir(), ".agenthop");
-  if (options.code) await joinSession(options, home);
-  else await createSession(options, home);
+  const lines = options.lines ?? stdinLines();
+  if (options.code) await joinSession({ ...options, lines }, home);
+  else await createSession({ ...options, lines }, home);
 }
 
 async function createSession(options: SessionOptions, home: string): Promise<void> {
   const hello = options.hello?.trim() ?? "";
-  if (!hello) throw new Error("usage: agenthop --agent <command> <背景>");
+  if (!hello) throw new Error("usage: agenthop <任务背景>");
   const host = await startHost({ relay: options.relay, pass: options.pass, home });
   const logFile = sessionPath(home, host.code);
   write(logFile, "local", "waiting", host.code);
@@ -51,13 +66,10 @@ async function createSession(options: SessionOptions, home: string): Promise<voi
           write(logFile, "local", "ready");
           phase = "ready";
         } else if (phase === "ready" && wire.kind === "say") {
-          const line = write(logFile, "peer", "say", wire.text);
-          await speak(options.agent, line, async (text) => {
-            await sayLocal(host, sayWire(text));
-            write(logFile, "local", "say", text);
-          });
+          write(logFile, "peer", "say", wire.text);
         }
       }
+      if (phase === "ready") await flushSays(options.lines!, (text) => sayLocal(host, text), logFile);
       await delay(200);
     }
   } finally {
@@ -71,7 +83,8 @@ async function joinSession(options: SessionOptions, home: string): Promise<void>
   write(logFile, "local", "connected");
   await sendMessage({ code, text: CONNECT, relay: options.relay, pass: options.pass });
   let after = 0;
-  let phase: "wait-hello" | "ready" = "wait-hello";
+  let phase: "wait-hello" | "wait-confirm" | "ready" = "wait-hello";
+  const early: string[] = [];
   while (!options.signal?.aborted) {
     const body = await readQueue(queueBase(options.relay, code), after, options.pass);
     for (const event of body.events) {
@@ -79,28 +92,39 @@ async function joinSession(options: SessionOptions, home: string): Promise<void>
       if (event.from !== "host") continue;
       const wire = parseWire(event.text);
       if (phase === "wait-hello" && wire.kind === "hello") {
-        const line = write(logFile, "peer", "hello", wire.text);
-        const reply = runAgent(options.agent, line);
-        if (!reply) return;
-        await sendMessage({ code, text: confirmWire(reply), relay: options.relay, pass: options.pass });
-        write(logFile, "local", "confirm", reply);
-        write(logFile, "local", "ready");
-        phase = "ready";
+        write(logFile, "peer", "hello", wire.text);
+        phase = "wait-confirm";
       } else if (phase === "ready" && wire.kind === "say") {
-        const line = write(logFile, "peer", "say", wire.text);
-        await speak(options.agent, line, async (text) => {
-          await sendMessage({ code, text: sayWire(text), relay: options.relay, pass: options.pass });
-          write(logFile, "local", "say", text);
-        });
+        write(logFile, "peer", "say", wire.text);
       }
+    }
+    const typed = options.lines!.take();
+    if (phase === "wait-hello") early.push(...typed);
+    else if (phase === "wait-confirm") typed.unshift(...early.splice(0));
+    if (phase === "wait-confirm" && typed.length > 0) {
+      const reply = typed.shift() ?? "";
+      await sendMessage({ code, text: confirmWire(reply), relay: options.relay, pass: options.pass });
+      write(logFile, "local", "confirm", reply);
+      write(logFile, "local", "ready");
+      phase = "ready";
+    }
+    if (phase === "ready") {
+      for (const text of typed) await sendOut(code, text, options, logFile);
     }
     await delay(200);
   }
 }
 
-async function speak(agent: string, line: string, send: (text: string) => Promise<void>): Promise<void> {
-  const reply = runAgent(agent, line);
-  if (reply) await send(reply);
+async function flushSays(lines: LineSource, send: (wire: string) => Promise<void>, logFile: string): Promise<void> {
+  for (const text of lines.take()) {
+    await send(sayWire(text));
+    write(logFile, "local", "say", text);
+  }
+}
+
+async function sendOut(code: string, text: string, options: SessionOptions, logFile: string): Promise<void> {
+  await sendMessage({ code, text: sayWire(text), relay: options.relay, pass: options.pass });
+  write(logFile, "local", "say", text);
 }
 
 async function sayLocal(host: RunningHost, text: string): Promise<void> {
@@ -156,6 +180,23 @@ function confirmWire(text: string): string {
 
 export function sayWire(text: string): string {
   return `[[agenthop:say]] ${text}`;
+}
+
+function stdinLines(): LineSource {
+  const pending: string[] = [];
+  const input = process.stdin;
+  let rest = "";
+  input.setEncoding("utf8");
+  input.on("data", (chunk: string) => {
+    rest += chunk;
+    const parts = rest.split(/\r?\n/);
+    rest = parts.pop() ?? "";
+    for (const part of parts) {
+      const text = part.trim();
+      if (text) pending.push(text);
+    }
+  });
+  return { take: () => pending.splice(0) };
 }
 
 function delay(ms: number): Promise<void> {

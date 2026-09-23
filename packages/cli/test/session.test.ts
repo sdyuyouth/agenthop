@@ -4,20 +4,18 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { startRelay } from "@agenthop/relay-node";
 import { sendMessage } from "../src/send.js";
-import { runSession, sayWire, sessionPath } from "../src/session.js";
-
-const confirmAgent = `node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{if(s.includes(' hello ')) process.stdout.write('确认建立通道'); else if(s.includes(' say ')) process.stdout.write('收到')})"`;
-const replyAgent = `node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{if(s.includes(' say ')) process.stdout.write('下一句')})"`;
-const refuseAgent = `node -e "process.exit(1)"`;
+import { lineQueue, runSession, sayWire, sessionPath } from "../src/session.js";
 
 describe("session", () => {
-  it("opens the channel only after the joining agent confirms", async () => {
+  it("opens the channel when the joining agent writes a confirmation", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "agenthop-session-"));
     const relay = await startRelay();
     const stop = new AbortController();
+    const creatorLines = lineQueue();
+    const joinerLines = lineQueue();
     const creator = runSession({
       hello: "我需要向对方了解鲁越森",
-      agent: replyAgent,
+      lines: creatorLines,
       relay: relay.url,
       home: path.join(dir, "creator"),
       signal: stop.signal,
@@ -25,30 +23,32 @@ describe("session", () => {
     const code = await waitForText(path.join(dir, "creator"), "waiting");
     const joiner = runSession({
       code,
-      agent: confirmAgent,
+      lines: joinerLines,
       relay: relay.url,
       home: path.join(dir, "joiner"),
       signal: stop.signal,
     });
-    await waitForText(path.join(dir, "creator"), "ready");
     await waitForText(path.join(dir, "joiner"), "peer hello 我需要向对方了解鲁越森");
+    joinerLines.push("确认建立通道");
+    await waitForText(path.join(dir, "creator"), "ready");
     await sendMessage({ code, text: sayWire("近况如何"), relay: relay.url });
+    await waitForText(path.join(dir, "creator"), "peer say 近况如何");
+    creatorLines.push("下一句");
     await waitForText(path.join(dir, "creator"), "local say 下一句");
     const creatorLog = await readFile(sessionPath(path.join(dir, "creator"), code), "utf8");
-    expect(creatorLog).toContain("local connected");
     expect(creatorLog).toContain("peer confirm 确认建立通道");
     expect(creatorLog.indexOf("local ready")).toBeLessThan(creatorLog.indexOf("peer say 近况如何"));
     stop.abort();
     await Promise.allSettled([creator, joiner, relay.close()]);
   });
 
-  it("does not open the channel when the joining agent does not confirm", async () => {
+  it("stays unready when the joining agent writes nothing", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "agenthop-session-"));
     const relay = await startRelay();
     const stop = new AbortController();
     const creator = runSession({
       hello: "我需要向对方了解鲁越森",
-      agent: replyAgent,
+      lines: lineQueue(),
       relay: relay.url,
       home: path.join(dir, "creator"),
       signal: stop.signal,
@@ -56,7 +56,7 @@ describe("session", () => {
     const code = await waitForText(path.join(dir, "creator"), "waiting");
     const joiner = runSession({
       code,
-      agent: refuseAgent,
+      lines: lineQueue(),
       relay: relay.url,
       home: path.join(dir, "joiner"),
       signal: stop.signal,
@@ -83,10 +83,7 @@ async function waitForText(home: string, text: string): Promise<string> {
     }
     for (const file of files) {
       const body = await readFile(path.join(home, "sessions", file), "utf8");
-      if (body.includes(text)) {
-        const code = body.match(/waiting (\S+)/)?.[1] ?? file.replace(/\.log$/, "");
-        return code;
-      }
+      if (body.includes(text)) return body.match(/waiting (\S+)/)?.[1] ?? file.replace(/\.log$/, "");
     }
     await delay(30);
   }
