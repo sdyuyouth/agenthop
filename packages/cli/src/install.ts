@@ -20,14 +20,44 @@ const windows = platform() === "win32";
 export type InstallOptions = {
   /** Directories that should contain SKILL.md. The caller names its own skill folder. */
   skillDirs?: string[];
+  /** Only rewrite SKILL.md. `update` uses this to refresh the skill with the new program. */
+  skillOnly?: boolean;
 };
 
 /** Copy this program onto PATH and write the skill. No repository and no package install. */
 export function installAgenthop(options: InstallOptions = {}): void {
-  const command = installCommand();
-  const skills = writeSkillFiles(options.skillDirs ?? []);
-  console.log(command);
+  const dirs = rememberSkillDirs(options.skillDirs ?? []);
+  const command = options.skillOnly ? "" : installCommand();
+  const skills = writeSkillFiles(dirs);
+  if (command) console.log(command);
   for (const skill of skills) console.log(skill);
+}
+
+/**
+ * Where SKILL.md goes. Directories named on the command line are added to the ones a previous
+ * install recorded, so `update` can refresh every copy without being told again.
+ */
+export function rememberSkillDirs(named: string[], home = homedir()): string[] {
+  const dirs = new Set(readSkillDirs(home));
+  for (const dir of named) {
+    if (!dir.trim()) throw new Error("usage: agenthop install [--skill-dir DIR]");
+    dirs.add(resolve(dir));
+  }
+  const kept = [...dirs];
+  const file = join(home, ".agenthop", "install.json");
+  ensureDir(dirname(file));
+  writeFileSync(file, `${JSON.stringify({ skillDirs: kept }, null, 2)}\n`);
+  return kept;
+}
+
+export function readSkillDirs(home = homedir()): string[] {
+  try {
+    const body = JSON.parse(readFileSync(join(home, ".agenthop", "install.json"), "utf8")) as { skillDirs?: unknown };
+    if (!Array.isArray(body.skillDirs)) return [];
+    return body.skillDirs.filter((dir): dir is string => typeof dir === "string" && dir.trim().length > 0);
+  } catch {
+    return [];
+  }
 }
 
 /** Write SKILL.md under the home directory and into each directory the caller provides. */
@@ -61,7 +91,7 @@ function installCommand(): string {
     const destDir = join(process.env.LOCALAPPDATA || join(homedir(), "AppData", "Local"), "agenthop");
     ensureDir(destDir);
     const dest = join(destDir, "agenthop.exe");
-    if (!dev) copyFileSync(source, dest);
+    if (!dev && resolve(source) !== resolve(dest)) copyFileSync(source, dest);
     else writeFileSync(join(destDir, "agenthop.cmd"), `@echo off\r\n"${process.execPath}" "${source}" %*\r\n`);
     ensureWindowsPath(destDir);
     return dev ? join(destDir, "agenthop.cmd") : dest;
@@ -76,7 +106,9 @@ function installCommand(): string {
       symlinkSync(source, dest);
     }
   } else {
-    copyFileSync(source, dest);
+    // Installing from the installed copy: there is nothing to copy, and on Linux a running
+    // program cannot be written to.
+    if (resolve(source) !== resolve(dest)) copyFileSync(source, dest);
     chmodSync(dest, 0o755);
   }
   ensureUnixPath(destDir);

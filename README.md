@@ -58,6 +58,8 @@ ARM64 把文件名换成 `agenthop-linux-arm64`。命令装到 `~/.local/bin/age
 
 `--skill-dir` 可重复。每个目录写入一份 `SKILL.md`。无论是否指定，都会再写一份到家目录下的 `.agenthop/SKILL.md`。
 
+这些目录会记在 `<家目录>/.agenthop/install.json` 里。`agenthop update` 换完程序后，会用新程序把新的 `SKILL.md` 写回每一个记录过的目录——技能文本在程序里面，所以只有新程序能写出新的技能。万一写不成（从 v0.2.0 之前的版本升上来就会这样），update 会打印出需要手动执行的那行安装命令。
+
 已经安装过时：
 
 ```bash

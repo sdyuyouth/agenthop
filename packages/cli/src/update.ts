@@ -1,8 +1,9 @@
+import { spawnSync } from "node:child_process";
 import { chmodSync, lstatSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, platform, arch } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { DEFAULT_RELAY } from "./host.js";
-import { ensureDir } from "./install.js";
+import { ensureDir, readSkillDirs } from "./install.js";
 import { version } from "./version.js";
 
 const ASSETS: Record<string, string> = {
@@ -45,6 +46,31 @@ export async function updateAgenthop(options: { check?: boolean; force?: boolean
   await download(`${base}/download/${asset}`, downloaded);
   replaceExecutable(target, downloaded);
   console.log(target);
+  refreshSkill(target);
+}
+
+/**
+ * The skill text lives inside the program, so only the new program can write the new skill.
+ * Run it once for that. If it cannot run, say what to run by hand rather than leave the old
+ * SKILL.md sitting there looking current.
+ */
+export function refreshSkill(target: string, run = spawnSync): void {
+  const result = run(target, ["install", "--skill-only"], { encoding: "utf8" });
+  const written = (result.stdout ?? "").trim();
+  if (!result.error && result.status === 0 && written) {
+    for (const line of written.split("\n")) console.log(line);
+    return;
+  }
+  console.log(skillReminder(target));
+}
+
+export function skillReminder(target: string, home = homedir()): string {
+  const dirs = readSkillDirs(home);
+  const named = dirs.map((dir) => ` --skill-dir ${dir}`).join("");
+  return [
+    "SKILL.md 没有一起更新。技能文本在程序里面，要再跑一次安装才会写出来：",
+    `  ${target} install${named}`,
+  ].join("\n");
 }
 
 async function readLatest(base: string): Promise<ReleaseInfo> {

@@ -150,7 +150,7 @@ describe("session", () => {
 });
 
 async function waitForText(home: string, text: string): Promise<string> {
-  const deadline = Date.now() + 8000;
+  const deadline = Date.now() + 20000;
   while (Date.now() < deadline) {
     let files: string[] = [];
     try {

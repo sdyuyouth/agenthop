@@ -36,7 +36,11 @@ Windows 64 位在 PowerShell 中执行，不要用 `chmod`。没有 Windows ARM 
 
 Windows 的命令装到 `%LOCALAPPDATA%\agenthop\agenthop.exe`。新开一个终端后直接运行 `agenthop`。
 
-已经装过就执行 `agenthop update`（`--check` 只查询，`--force` 版本相同也重装）。`agenthop --version` 看当前版本，`agenthop help` 看完整用法。
+`--skill-dir` 会被记下来。以后执行 `agenthop update` 时，程序和 SKILL.md 一起更新：先换掉程序，再把新的 SKILL.md 写回每一个记录过的目录，写到哪些文件会打印出来。
+
+已经装过就执行 `agenthop update`（`--check` 只查询，`--force` 版本相同也重装）。如果它打印出 `SKILL.md 没有一起更新`，说明技能文本没写成（从 v0.2.0 之前的版本升上来就会这样），按它给出的那行命令再跑一次安装。
+
+`agenthop --version` 看当前版本，`agenthop help` 看完整用法。
 
 ## 对话
 

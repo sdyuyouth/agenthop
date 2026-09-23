@@ -29,7 +29,7 @@ try {
       // The conversation is over. An open stdin would otherwise keep the process alive for good.
       process.exit(0);
     } else if (input.name === "install") {
-      installAgenthop({ skillDirs: flags.skillDirs });
+      installAgenthop({ skillDirs: flags.skillDirs, skillOnly: flags.skillOnly });
     } else if (input.name === "update" || input.name === "upgrade" || input.name === "self-update") {
       await updateAgenthop({ check: flags.check, force: flags.force });
     } else if (input.name === "version") {
@@ -89,10 +89,11 @@ function printHelp(): void {
     "  --skill-dir 可重复。每个目录写入一份 SKILL.md。另外总会写到 <家目录>/.agenthop/SKILL.md。",
     "",
     "更新",
-    "  agenthop update",
+    "  agenthop update             换掉程序，再把新的 SKILL.md 写回记录过的目录",
     "  agenthop update --check     只查询，不安装",
     "  agenthop update --force     版本相同也重新安装",
     "  upgrade 与 self-update 相同。",
+    "  打印出「SKILL.md 没有一起更新」时，按它给的那行命令再跑一次安装。",
     "",
     "中继",
     "  默认 https://agenthop.imatrix.tech",
