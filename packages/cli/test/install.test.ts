@@ -2,7 +2,7 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { writeSkillFiles } from "../src/install.js";
+import { commandSource, writeSkillFiles } from "../src/install.js";
 
 describe("skill install", () => {
   it("writes SKILL.md into the home directory and into each directory the caller names", async () => {
@@ -16,5 +16,12 @@ describe("skill install", () => {
     expect(text).toContain("--skill-dir");
     expect(text).not.toContain(".grok");
     expect(await readFile(path.join(home, ".agenthop", "SKILL.md"), "utf8")).toBe(text);
+  });
+
+  it("puts the launcher on PATH from a source checkout, never the node binary", () => {
+    const dev = commandSource("/usr/local/bin/node");
+    expect(dev.dev).toBe(true);
+    expect(dev.source.endsWith(path.join("bin", "agenthop.mjs"))).toBe(true);
+    expect(commandSource("/tmp/agenthop-macos-arm64")).toEqual({ dev: false, source: "/tmp/agenthop-macos-arm64" });
   });
 });

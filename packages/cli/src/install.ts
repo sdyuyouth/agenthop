@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { homedir, platform } from "node:os";
 import { delimiter, dirname, join, parse, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { skillMarkdown } from "./skill-text.js";
 
 const windows = platform() === "win32";
@@ -43,15 +44,25 @@ export function writeSkillFiles(skillDirs: string[], home = homedir()): string[]
   return files;
 }
 
+export type CommandSource = { dev: boolean; source: string };
+
+/**
+ * The released program is a single executable and installs by copying itself. Run from a source
+ * checkout the executable is Node itself, so what belongs on PATH is the launcher, never `node`.
+ */
+export function commandSource(execPath: string = process.execPath): CommandSource {
+  if (!isNodeBinary(execPath)) return { dev: false, source: execPath };
+  return { dev: true, source: fileURLToPath(new URL("../bin/agenthop.mjs", import.meta.url)) };
+}
+
 function installCommand(): string {
-  const source = process.execPath;
-  const dev = isNodeBinary(source);
+  const { dev, source } = commandSource();
   if (windows) {
     const destDir = join(process.env.LOCALAPPDATA || join(homedir(), "AppData", "Local"), "agenthop");
     ensureDir(destDir);
     const dest = join(destDir, "agenthop.exe");
     if (!dev) copyFileSync(source, dest);
-    else writeFileSync(join(destDir, "agenthop.cmd"), `@echo off\r\nnode "${source}" %*\r\n`);
+    else writeFileSync(join(destDir, "agenthop.cmd"), `@echo off\r\n"${process.execPath}" "${source}" %*\r\n`);
     ensureWindowsPath(destDir);
     return dev ? join(destDir, "agenthop.cmd") : dest;
   }
@@ -59,6 +70,7 @@ function installCommand(): string {
   ensureDir(destDir);
   const dest = join(destDir, "agenthop");
   if (dev) {
+    chmodSync(source, 0o755);
     if (!sameFile(dest, source)) {
       rmSync(dest, { force: true });
       symlinkSync(source, dest);

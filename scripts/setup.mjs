@@ -106,7 +106,7 @@ function placeSkill(file) {
 function verify() {
   const result = spawnSync(process.execPath, [launcher], { encoding: "utf8" });
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
-  if (result.status !== 0 || !output.includes("agenthop host")) {
+  if (result.status !== 0 || !output.includes("agenthop <配对码>")) {
     console.error(output);
     console.error("agenthop: setup finished but the command did not print its usage");
     process.exit(1);

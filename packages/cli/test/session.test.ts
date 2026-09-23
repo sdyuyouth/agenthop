@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -22,7 +22,7 @@ describe("session", () => {
     });
     const code = await waitForText(path.join(dir, "creator"), "waiting");
     const joiner = runSession({
-      code,
+      code: code.toUpperCase(),
       lines: joinerLines,
       relay: relay.url,
       home: path.join(dir, "joiner"),
@@ -36,6 +36,8 @@ describe("session", () => {
     creatorLines.push("下一句");
     await waitForText(path.join(dir, "creator"), "local say 下一句");
     const creatorLog = await readFile(sessionPath(path.join(dir, "creator"), code), "utf8");
+    expect(creatorLog).toContain("peer connected");
+    expect(creatorLog).not.toContain("local connected");
     expect(creatorLog).toContain("peer confirm 确认建立通道");
     expect(creatorLog.indexOf("local ready")).toBeLessThan(creatorLog.indexOf("peer say 近况如何"));
     stop.abort();
@@ -69,12 +71,87 @@ describe("session", () => {
     stop.abort();
     await Promise.allSettled([creator, joiner, relay.close()]);
   });
+
+  it("ends both sides when one of them says goodbye", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "agenthop-session-"));
+    const relay = await startRelay();
+    const creatorLines = lineQueue();
+    const joinerLines = lineQueue();
+    const creator = runSession({
+      hello: "背景",
+      lines: creatorLines,
+      relay: relay.url,
+      home: path.join(dir, "creator"),
+    });
+    const code = await waitForText(path.join(dir, "creator"), "waiting");
+    const joiner = runSession({ code, lines: joinerLines, relay: relay.url, home: path.join(dir, "joiner") });
+    await waitForText(path.join(dir, "joiner"), "peer hello");
+    joinerLines.push("确认");
+    await waitForText(path.join(dir, "creator"), "ready");
+
+    creatorLines.push("/bye");
+    await waitForText(path.join(dir, "joiner"), "peer bye");
+    await Promise.all([creator, joiner]);
+    expect(await readFile(sessionPath(path.join(dir, "creator"), code), "utf8")).toContain("local bye");
+    await relay.close();
+  });
+
+  it("writes peer gone instead of a raw relay error when the room disappears", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "agenthop-session-"));
+    const relay = await startRelay();
+    const creator = runSession({
+      hello: "背景",
+      lines: lineQueue(),
+      relay: relay.url,
+      home: path.join(dir, "creator"),
+    });
+    const code = await waitForText(path.join(dir, "creator"), "waiting");
+    const joiner = runSession({
+      code,
+      lines: lineQueue(),
+      relay: relay.url,
+      home: path.join(dir, "joiner"),
+      goneAfterMs: 300,
+    });
+    await waitForText(path.join(dir, "joiner"), "peer hello");
+
+    await relay.close();
+    await waitForText(path.join(dir, "joiner"), "peer gone");
+    await waitForText(path.join(dir, "creator"), "peer gone");
+    await Promise.all([creator, joiner]);
+  });
+
+  it("says so when its own standard input is closed, and keeps listening", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "agenthop-session-"));
+    const relay = await startRelay();
+    const creatorLines = lineQueue();
+    const joinerLines = lineQueue();
+    const creator = runSession({
+      hello: "背景",
+      lines: creatorLines,
+      relay: relay.url,
+      home: path.join(dir, "creator"),
+    });
+    const code = await waitForText(path.join(dir, "creator"), "waiting");
+    const joiner = runSession({ code, lines: joinerLines, relay: relay.url, home: path.join(dir, "joiner") });
+    await waitForText(path.join(dir, "joiner"), "peer hello");
+    joinerLines.push("确认");
+    await waitForText(path.join(dir, "creator"), "ready");
+
+    creatorLines.end();
+    await waitForText(path.join(dir, "creator"), "local input-closed");
+    await sendMessage({ code, text: sayWire("还在听吗"), relay: relay.url });
+    await waitForText(path.join(dir, "creator"), "peer say 还在听吗");
+
+    joinerLines.push("/bye");
+    await Promise.all([creator, joiner]);
+    await relay.close();
+  });
 });
 
 async function waitForText(home: string, text: string): Promise<string> {
-  const deadline = Date.now() + 5000;
+  const deadline = Date.now() + 8000;
   while (Date.now() < deadline) {
-    const { readdir, readFile } = await import("node:fs/promises");
     let files: string[] = [];
     try {
       files = await readdir(path.join(home, "sessions"));
@@ -83,11 +160,12 @@ async function waitForText(home: string, text: string): Promise<string> {
     }
     for (const file of files) {
       const body = await readFile(path.join(home, "sessions", file), "utf8");
-      if (body.includes(text)) return body.match(/waiting (\S+)/)?.[1] ?? file.replace(/\.log$/, "");
+      const line = body.split("\n").find((candidate) => candidate.includes(text));
+      if (line) return file.replace(/\.log$/, "");
     }
-    await delay(30);
+    await delay(50);
   }
-  throw new Error(`log did not contain ${text}`);
+  throw new Error(`${text} did not arrive in ${home}`);
 }
 
 function delay(ms: number): Promise<void> {

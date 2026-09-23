@@ -1,109 +1,53 @@
 import { writeSync } from "node:fs";
 import { startRelay } from "@agenthop/relay-node";
-import { isValidCode, normalizeCode, relayEndpoints } from "@agenthop/tunnel";
+import { classifyInput, parseArgs } from "./args.js";
 import { installAgenthop } from "./install.js";
 import { updateAgenthop } from "./update.js";
-import { DEFAULT_RELAY, readHostFile, startHost } from "./host.js";
-import { followRoom, readQueue, sendMessage, type SendKind } from "./send.js";
-import { runSession } from "./session.js";
-import { type SessionEvent } from "./talk.js";
-
-const parsed = parseArgs(process.argv.slice(2));
-const flags = parsed.flags;
-const positionals = parsed.positionals;
-const command = positionals[0] ?? "";
-const words = positionals.slice(1);
-const maintenance = new Set(["host", "join", "watch", "queue", "inbox", "reply", "send", "install", "update", "upgrade", "self-update", "relay", "help"]);
+import { BYE, runSession } from "./session.js";
+import { version } from "./version.js";
 
 try {
-  if (flags.agent) {
-    throw new Error("不需要 --agent，也不需要回复脚本。agenthop 一直运行：对方的话在标准输出，要说的话写到标准输入。");
-  } else if (!maintenance.has(command) && (isValidCode(command) || positionals.length > 0)) {
-    const code = isValidCode(command) ? command : undefined;
-    await runSession({
-      code,
-      hello: code ? undefined : positionals.join(" "),
-      relay: flags.relay,
-      pass: flags.pass,
-    });
-  } else if (command === "host") {
-    const running = await startHost({
-      relay: flags.relay,
-      pass: flags.pass,
-      onReceive: flags.onReceive,
-      onEvent: (event) => printEvent(event, flags.json),
-    });
-    if (flags.json) {
-      writeLine(JSON.stringify({ at: new Date().toISOString(), code: running.code, url: running.url }));
-    } else {
-      writeLine(`${new Date().toISOString()} code ${running.code}`);
-      writeLine(`${new Date().toISOString()} url  ${running.url}`);
-    }
-    process.on("SIGINT", () => {
-      void running.close().then(() => process.exit(0));
-    });
-  } else if (command === "join" || command === "watch") {
-    const code = words[0];
-    if (!code) throw new Error("usage: agenthop watch <code> [--on-receive CMD]");
-    process.on("SIGINT", () => process.exit(0));
-    await followRoom({
-      code,
-      relay: flags.relay,
-      pass: flags.pass,
-      onReceive: flags.onReceive,
-      onEvent: (event) => printEvent(event, flags.json),
-    });
-  } else if (command === "queue" || command === "inbox") {
-    const code = words[0];
-    if (code) {
-      const relay = flags.relay ?? process.env.AGENTHOP_RELAY ?? DEFAULT_RELAY;
-      console.log(JSON.stringify(await readQueue(relayEndpoints(relay, normalizeCode(code)).publicBase, 0, flags.pass)));
-    } else {
-      const host = await readHostFile();
-      const response = await fetch(`${host.controlUrl}/queue`);
-      if (!response.ok) throw new Error(await response.text());
-      console.log(await response.text());
-    }
-  } else if (command === "reply" || command === "send") {
-    const kind = kindOf(flags, command);
-    const parsedSend = splitSend(words, command);
-    if (!parsedSend.text && flags.files.length === 0) throw new Error(sendUsage());
-    const result = await sendMessage({
-      code: parsedSend.code,
-      text: flags.text ?? parsedSend.text,
-      files: flags.files,
-      relay: flags.relay,
-      pass: flags.pass,
-      outDir: flags.out,
-      kind,
-      answerId: command === "reply" ? words[0] : flags.answer,
-    });
-    if (flags.json || result.event !== "done") {
-      console.log(JSON.stringify(result));
-    } else {
-      if (result.text) console.log(result.text);
-      for (const file of result.files) console.error(`file ${file.path}`);
-    }
-  } else if (command === "install") {
-    installAgenthop({ skillDirs: flags.skillDirs });
-  } else if (command === "update" || command === "upgrade" || command === "self-update") {
-    await updateAgenthop({ check: flags.check, force: flags.force });
-  } else if (command === "relay") {
-    const [host, portText] = (flags.listen ?? "127.0.0.1:8787").split(":");
-    const running = await startRelay({
-      listenHost: host,
-      listenPort: portText ? Number(portText) : undefined,
-      pass: flags.pass,
-    });
-    console.log(running.url);
-    process.on("SIGINT", () => {
-      void running.close().then(() => process.exit(0));
-    });
-  } else if (flags.help || command === "help" || command === "") {
+  const { flags, positionals } = parseArgs(process.argv.slice(2));
+  if (flags.version) {
+    writeLine(`agenthop v${version}`);
+  } else if (flags.help) {
     printHelp();
   } else {
-    printHelp();
-    process.exit(1);
+    const input = classifyInput(positionals);
+    if (input.kind === "help") {
+      printHelp();
+    } else if (input.kind === "join" || input.kind === "create") {
+      const stop = new AbortController();
+      process.on("SIGINT", () => stop.abort());
+      await runSession({
+        code: input.kind === "join" ? input.code : undefined,
+        hello: input.kind === "create" ? input.hello : undefined,
+        relay: flags.relay,
+        pass: flags.pass,
+        signal: stop.signal,
+      });
+      // The conversation is over. An open stdin would otherwise keep the process alive for good.
+      process.exit(0);
+    } else if (input.name === "install") {
+      installAgenthop({ skillDirs: flags.skillDirs });
+    } else if (input.name === "update" || input.name === "upgrade" || input.name === "self-update") {
+      await updateAgenthop({ check: flags.check, force: flags.force });
+    } else if (input.name === "version") {
+      writeLine(`agenthop v${version}`);
+    } else if (input.name === "relay") {
+      const [host, portText] = (flags.listen ?? "127.0.0.1:8787").split(":");
+      const running = await startRelay({
+        listenHost: host,
+        listenPort: portText ? Number(portText) : undefined,
+        pass: flags.pass,
+      });
+      writeLine(running.url);
+      process.on("SIGINT", () => {
+        void running.close().then(() => process.exit(0));
+      });
+    } else {
+      printHelp();
+    }
   }
 } catch (error) {
   console.error(error instanceof Error ? error.message : error);
@@ -113,25 +57,22 @@ try {
 function printHelp(): void {
   const lines = [
     "对话",
-    "  agenthop <任务背景>",
-    "  agenthop <配对码>",
-    "  用当前会话的一次工具调用启动，并保持这个进程直到对话结束。",
-    "  对方的话是这个进程的标准输出。当前会话的回复写进它的标准输入。",
-    "  不要使用 --agent。不要写 reply.ps1 或 reply.sh。不要调用 claude -p 或其他非交互 agent。",
-    "  进程不会因为新消息而重新启动。新消息只是多写出的一行。",
-    "  没有配对码就创建房间。任务背景作为 hello 发出，waiting 行里有配对码。",
-    "  有配对码就加入。读到 peer hello 后，由当前会话判断背景是否属实。",
-    "  属实：把确认写到标准输入。创建方随后输出 ready。",
-    "  不属实：询问用户，不要写标准输入。",
-    "  ready 之后，对方的新一句是 peer say。把回复正文写到标准输入，不要加状态名或 JSON。",
-    "  local say 是自己刚送出的记录，不要因此再启动进程。",
-    "  标准输出必须让用户能看到。可以另存一份，但要同时告诉用户绝对路径和查看命令。",
-    "  macOS / Linux：tail -f <家目录>/.agenthop/sessions/<配对码>.log",
-    "  Windows：Get-Content -Wait -Tail 30 %USERPROFILE%\\.agenthop\\sessions\\<配对码>.log",
-    "  不要只重定向到 agent 自己的 out.log，而让任务面板一直没有输出。",
+    "  agenthop <任务背景>     创建房间，这段文字作为 hello 发给对方",
+    "  agenthop <配对码>       加入对方的房间",
+    "",
+    "  用一次工具调用启动，让这个进程活到对话结束。",
+    "  对方的话是它的标准输出。要说的话写进同一个标准输入，一行一句，不加状态名也不加 JSON。",
+    "  这个进程的输出就是对话本身，要出现在用户看得到的地方。",
+    "  另存一份可以，但要同时告诉用户文件的绝对路径和查看命令。",
+    "",
+    "  创建方的 waiting 行里有配对码，把它交给对方。",
+    "  加入方读到 peer hello 后判断这段背景是否和自己的上下文相符：",
+    "  相符就写一行确认，创建方随后输出 ready；不相符就问用户，不要写标准输入。",
+    `  ready 之后对方的每一句是 peer say。写一行 ${BYE} 结束对话，两边都会退出。`,
+    "",
     "  日志：<家目录>/.agenthop/sessions/<配对码>.log",
     "  每行：<时间> <local|peer> <状态> <正文>",
-    "  状态：waiting connected hello confirm ready say",
+    "  状态：waiting connected hello confirm ready say bye gone",
     "",
     "安装",
     "  下载 https://github.com/sdyuyouth/agenthop/releases/latest",
@@ -146,14 +87,12 @@ function printHelp(): void {
     "  Windows PowerShell：.\\agenthop-windows-x64.exe install --skill-dir <技能目录>",
     "  命令装到 %LOCALAPPDATA%\\agenthop\\agenthop.exe，并写入用户 PATH。新开的终端才能直接用 agenthop。",
     "  --skill-dir 可重复。每个目录写入一份 SKILL.md。另外总会写到 <家目录>/.agenthop/SKILL.md。",
-    "  Windows 的家目录是 %USERPROFILE%。",
     "",
     "更新",
     "  agenthop update",
     "  agenthop update --check     只查询，不安装",
     "  agenthop update --force     版本相同也重新安装",
     "  upgrade 与 self-update 相同。",
-    "  v0.1.6 之前的程序没有 update，需要先换一次当前发布的文件。",
     "",
     "中继",
     "  默认 https://agenthop.imatrix.tech",
@@ -161,91 +100,11 @@ function printHelp(): void {
     "  自建时两边都加 --pass SECRET",
     "  agenthop relay [--listen HOST:PORT] [--pass SECRET]",
     "",
-    "  agenthop help",
+    "  agenthop help       agenthop --version",
   ];
   for (const line of lines) writeLine(line);
 }
 
-function printEvent(event: SessionEvent, json: boolean): void {
-  if (json) {
-    writeLine(JSON.stringify(event));
-    return;
-  }
-  writeLine(`${event.at} ${event.from} ${event.event} ${event.id}`);
-  if (event.text) writeLine(event.text);
-  for (const file of event.files) writeLine(`file ${file.path}`);
-  if (event.pending.length > 0) writeLine(`pending ${event.pending.join(" ")}`);
-}
-
 function writeLine(line: string): void {
   writeSync(1, `${line}\n`);
-}
-
-function kindOf(flags: Flags, command: string): SendKind {
-  const chosen = [flags.ask, Boolean(flags.answer) || command === "reply", flags.supplement].filter(Boolean).length;
-  if (chosen > 1) throw new Error(sendUsage());
-  if (flags.ask) return "ask";
-  if (flags.answer || command === "reply") return "result";
-  if (flags.supplement) return "supplement";
-  return "say";
-}
-
-function splitSend(positionals: string[], command: string): { code?: string; text: string } {
-  if (command === "reply") {
-    const id = positionals[0];
-    if (!id) throw new Error(sendUsage());
-    return { text: positionals.slice(1).join(" ") };
-  }
-  const head = positionals[0];
-  if (head && isValidCode(head)) return { code: head, text: positionals.slice(1).join(" ") };
-  return { text: positionals.join(" ") };
-}
-
-function sendUsage(): string {
-  return "usage: agenthop send [code] <text> [--ask] [--answer ID] [--supplement] [--file PATH]";
-}
-
-type Flags = {
-  relay?: string;
-  pass?: string;
-  listen?: string;
-  text?: string;
-  out?: string;
-  files: string[];
-  skillDirs: string[];
-  answer?: string;
-  ask: boolean;
-  supplement: boolean;
-  onReceive?: string;
-  agent?: string;
-  check: boolean;
-  force: boolean;
-  help: boolean;
-  json: boolean;
-};
-
-function parseArgs(args: string[]): { flags: Flags; positionals: string[] } {
-  const flags: Flags = { files: [], skillDirs: [], ask: false, supplement: false, check: false, force: false, help: false, json: false };
-  const positionals: string[] = [];
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === "--json") flags.json = true;
-    else if (arg === "--help" || arg === "-h") flags.help = true;
-    else if (arg === "--relay") flags.relay = args[++i];
-    else if (arg === "--pass") flags.pass = args[++i];
-    else if (arg === "--listen") flags.listen = args[++i];
-    else if (arg === "--text") flags.text = args[++i];
-    else if (arg === "--out") flags.out = args[++i];
-    else if (arg === "--file") flags.files.push(args[++i] ?? "");
-    else if (arg === "--ask") flags.ask = true;
-    else if (arg === "--supplement") flags.supplement = true;
-    else if (arg === "--answer") flags.answer = args[++i];
-    else if (arg === "--on-receive") flags.onReceive = args[++i];
-    else if (arg === "--agent") flags.agent = args[++i];
-    else if (arg === "--check") flags.check = true;
-    else if (arg === "--force") flags.force = true;
-    else if (arg === "--skill-dir") flags.skillDirs.push(args[++i] ?? "");
-    else positionals.push(arg ?? "");
-  }
-  return { flags, positionals };
 }

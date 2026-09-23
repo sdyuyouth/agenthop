@@ -34,7 +34,9 @@ describe("wrangler dev", () => {
     const cardText = await card.text();
     expect(card.status).toBe(200);
     expect(cardText).not.toContain("127.0.0.1:9");
-    expect(JSON.parse(cardText).supportedInterfaces[0].url).toBe(`${base}/r/${code}/`);
+    // The origin is whatever the relay was reached on, which under `wrangler dev` is the
+    // configured custom domain rather than the local address. What matters is the room path.
+    expect(JSON.parse(cardText).supportedInterfaces[0].url).toMatch(new RegExp(`^https?://[^/]+/r/${code}/$`));
 
     const echoed = await fetch(`${base}/r/${code}/`, {
       method: "POST",
