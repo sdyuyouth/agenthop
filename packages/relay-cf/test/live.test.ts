@@ -52,6 +52,16 @@ describe("wrangler dev", () => {
     const big = await fetch(`${base}/r/${code}/`, { method: "POST", body: "x".repeat(1024 * 1024 + 1) });
     expect(big.status).toBe(413);
 
+    let refused = 0;
+    for (let i = 0; i < 70; i++) {
+      const flood = await fetch(`${base}/r/${code}/`, { method: "POST", body: "flood" });
+      if (flood.status === 429) refused++;
+      await flood.arrayBuffer();
+    }
+    expect(refused).toBeGreaterThan(0);
+    // Reading is how the joining side follows the room, so it must not be rationed.
+    expect((await fetch(`${base}/r/${code}/agenthop/queue`)).status).not.toBe(429);
+
     host.close();
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect((await fetch(`${base}/r/${code}/`)).status).toBe(404);
