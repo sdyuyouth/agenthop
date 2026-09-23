@@ -80,7 +80,9 @@ describe("node relay", () => {
   });
 
   it("rate limits missing codes", async () => {
-    const relay = await startRelay();
+    // A frozen clock keeps the whole run inside one counting window; with the real one a run
+    // that crosses the minute gets a fresh allowance and the last request is a plain 404.
+    const relay = await startRelay({ now: () => 0 });
     openRelays.push(relay);
     let last = 0;
     for (let i = 0; i < 61; i++) {

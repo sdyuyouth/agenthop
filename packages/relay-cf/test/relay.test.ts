@@ -10,14 +10,16 @@ describe("workers relay", () => {
   });
 
   it("rate limits repeated lookups of a missing code", async () => {
-    let last = 0;
-    for (let i = 0; i < 61; i++) {
-      last = (
-        await SELF.fetch("http://example.com/r/4444-acid-acorn-acre/", {
-          headers: { "cf-connecting-ip": "203.0.113.20" },
-        })
-      ).status;
+    // The counter resets on the minute, so a run that starts near a boundary gets a fresh
+    // allowance part way through. Two allowances is the worst case; keep asking until one of
+    // them runs out.
+    let refused = false;
+    for (let i = 0; i < 130 && !refused; i++) {
+      const response = await SELF.fetch("http://example.com/r/4444-acid-acorn-acre/", {
+        headers: { "cf-connecting-ip": "203.0.113.20" },
+      });
+      refused = response.status === 429;
     }
-    expect(last).toBe(429);
+    expect(refused).toBe(true);
   });
 });
