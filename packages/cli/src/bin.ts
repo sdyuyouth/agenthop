@@ -91,7 +91,7 @@ function printHelp(): void {
     "        创建方 <家目录>/.agenthop/sessions/<房间地址>.create.log，加入方 <房间地址>.join.log。",
     "  每行：<时间> <local|peer> <状态> <正文>（本机时间，带时区偏移）",
     "  状态：log waiting connected hello confirm ready say working bye",
-    "        reconnecting reconnected undelivered gone expired refused files input-closed",
+    "        reconnecting reconnected undelivered gone expired refused files other input-closed",
     "",
     "安装",
     "  下载 https://github.com/sdyuyouth/agenthop/releases/latest",

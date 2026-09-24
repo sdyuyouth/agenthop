@@ -471,10 +471,17 @@ function isWorking(text: string): { text: string } | undefined {
  * person holding the same code cannot be mistaken for the peer. The id travels inside the seal,
  * which is what makes it worth checking: forging one means holding the secret.
  */
+const KINDS = new Set(["connect", "hello", "confirm", "say", "working", "bye", "sealed"]);
+
 export function parseWire(text: string): Wire {
-  const match = text.match(/^\[\[agenthop:(connect|hello|confirm|say|working|bye|sealed)(?::([A-Za-z0-9-]+))?]] ?([\s\S]*)$/);
+  const match = text.match(/^\[\[agenthop:([a-z]+)(?::([A-Za-z0-9-]+))?]] ?([\s\S]*)$/);
   if (!match) return { kind: "other", id: "", text };
-  return { kind: match[1] as Wire["kind"], id: match[2] ?? "", text: match[3] ?? "" };
+  const name = match[1] ?? "";
+  // A well-formed line in a form this version does not know is something a newer version on the
+  // other side added. Keeping its id lets it be written down as `other` rather than turned away
+  // as a stranger's — the whole line is kept, so the log says which form it was.
+  if (!KINDS.has(name)) return { kind: "other", id: match[2] ?? "", text };
+  return { kind: name as Wire["kind"], id: match[2] ?? "", text: match[3] ?? "" };
 }
 
 function wire(kind: string, id: string | undefined, text: string): string {

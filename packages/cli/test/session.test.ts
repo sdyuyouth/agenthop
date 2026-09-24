@@ -373,6 +373,30 @@ describe("session", () => {
     await relay.close();
   });
 
+  it("writes down a form it does not know instead of turning the peer away", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "agenthop-session-"));
+    const relay = await startRelay();
+    const creator = start({ hello: "背景", lines: lineQueue(), relay: relay.url, home: path.join(dir, "creator") });
+    const code = await waitForText(path.join(dir, "creator"), "waiting");
+    const address = addressOf(code);
+
+    // A peer holding the secret, speaking a form some later version added.
+    const peer = channel(code, "join");
+    await sendMessage({ code: address, text: peer.seal("[[agenthop:connect:abc123]]"), relay: relay.url });
+    await waitForText(path.join(dir, "creator"), "local hello");
+    await sendMessage({ code: address, text: peer.seal("[[agenthop:futureform:abc123]] 来自更新的版本"), relay: relay.url });
+    await waitForText(path.join(dir, "creator"), "peer other");
+
+    const log = await readFile(sessionPath(path.join(dir, "creator"), address, "create"), "utf8");
+    expect(log).not.toContain("peer refused");
+    // The whole line is kept, so the log says which form it was.
+    expect(log).toContain("peer other [[agenthop:futureform:abc123]] 来自更新的版本");
+
+    await sendMessage({ code: address, text: peer.seal("[[agenthop:bye:abc123]]"), relay: relay.url });
+    await Promise.all([creator]);
+    await relay.close();
+  });
+
   it("hands the room's history to nobody who lacks the key", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "agenthop-session-"));
     const relay = await startRelay();

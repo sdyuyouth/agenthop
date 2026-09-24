@@ -55,11 +55,11 @@ tunnel ─┬─ relay-node（自建中继，ws + node:http）
 
 **断线不等于结束**：创建方的 WS 掉了就按退避重开房间（`host.ts: recover`，同一个配对码，`RECOVER_MS` 45 秒），加入方读不到房间时也重试同样长。两边都会写 `reconnecting` / `reconnected`。房间是按配对码寻址的，所以重开之后对话接得上——`Talk` 日志在本地进程里，没丢。
 
-状态机靠**正文里的 wire 前缀**区分，不是靠协议字段：`[[agenthop:connect:<id>]]`、`[[agenthop:hello]] …`、`[[agenthop:confirm:<id>]] …`、`[[agenthop:say:<id>]] …`、`[[agenthop:bye:<id>]]`（`session.ts: parseWire`）。顺序固定为 `connect → hello → confirm → ready → say → bye`。加入方在 `wait-confirm` 之前写的行会被暂存（`early`），确认之后才放行——改这段时别把暂存丢了。
+状态机靠**正文里的 wire 前缀**区分，不是靠协议字段：`[[agenthop:connect:<id>]]`、`[[agenthop:hello]] …`、`[[agenthop:confirm:<id>]] …`、`[[agenthop:say:<id>]] …`、`[[agenthop:working:<id>]] …`、`[[agenthop:bye:<id>]]`，全部再封进 `[[agenthop:sealed]] <密文>`（`session.ts: parseWire`）。顺序固定为 `connect → hello → confirm → ready → say → bye`；`working` 是一张收条，ready 之后随时可以出现，加入方确认之前写的也会照样发出去而不被当成确认语。认不出来的形式记成 `peer other`，别让它抛。加入方在 `wait-confirm` 之前写的行会被暂存（`early`），确认之后才放行——改这段时别把暂存丢了。
 
 `<id>` 是加入方自己生成的，创建方只认第一个 connect 带来的那个。**这个 id 在密封层里面**——能造出一句合法密文就证明握有配对码里的密钥，所以 `accept` 现在是密码学的，不是约定俗成的。v0.4 之前有一条"没有 id 的行按旧版本接受"的兼容，已经删掉：旧版本的对端根本造不出密文，那条分支谁也保护不了，只是把 `accept` 开了个口子。房间本身仍然不认人：拿到地址的人都能 POST，过滤发生在会话层。
 
-**stdin 的语义**：一行正文就是一句话；`/bye`（`session.ts: BYE`）结束对话；EOF **不等于** bye——只写一行 `local input-closed` 然后继续收听，因为很多 agent harness 启动子进程时 stdin 本来就是关的，EOF 触发退出会让房间刚开就关。
+**stdin 的语义**：一行正文就是一句话；`/bye`（`session.ts: BYE`）结束对话；`/working <在做什么>`（`session.ts: WORKING`）发一张收条。收条走自己的状态词，是因为 agent 判断“轮到我了”靠的就是 `peer say`，收条要是也走 `say`，每收一句就要多烧对方一轮去读一句“收到”。**收条必须由 agent 写**：进程只知道自己把行打了出来，不知道模型有没有看，自动发等于谎报已读。EOF **不等于** bye——只写一行 `local input-closed` 然后继续收听，因为很多 agent harness 启动子进程时 stdin 本来就是关的，EOF 触发退出会让房间刚开就关。
 
 **告别是双向的**：收到 `[[agenthop:bye]]` 的一方自动把 bye 回过去再退出，先说的一方等这个回复，等不到就写 `peer gone`。`saidBye` 挡住无限对回。创建方作为回话方时要 linger 两秒再关房间，因为对方是隔着中继轮询读的。
 
