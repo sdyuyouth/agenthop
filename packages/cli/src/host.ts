@@ -94,22 +94,26 @@ export async function startHost(options: HostOptions = {}): Promise<RunningHost>
     const ws = new WebSocket(hostUrl, {
       headers: options.pass ? { authorization: `Bearer ${options.pass}` } : undefined,
     });
+    // A refusal can arrive the moment the relay accepts the socket, before we have sent
+    // anything. Listen first: waiting for the open event before attaching means missing it and
+    // then waiting out the deadline for a `ready` that was never coming.
+    const ready = new Promise<string>((resolve, reject) => {
+      ws.once("message", (data, isBinary) => {
+        if (isBinary) {
+          reject(new Error("expected ready"));
+          return;
+        }
+        const controlMessage = decodeControl(data.toString());
+        if (controlMessage.type === "error") reject(new Error(openError(controlMessage.code)));
+        else if (controlMessage.type === "ready") resolve(controlMessage.publicBase);
+        else reject(new Error("bad_control"));
+      });
+    });
+    ready.catch(() => undefined);
     try {
       await new Promise<void>((resolve, reject) => {
         ws.once("open", () => resolve());
         ws.once("error", (error) => reject(relayError(error, relay)));
-      });
-      const ready = new Promise<string>((resolve, reject) => {
-        ws.once("message", (data, isBinary) => {
-          if (isBinary) {
-            reject(new Error("expected ready"));
-            return;
-          }
-          const controlMessage = decodeControl(data.toString());
-          if (controlMessage.type === "error") reject(new Error(openError(controlMessage.code)));
-          else if (controlMessage.type === "ready") resolve(controlMessage.publicBase);
-          else reject(new Error("bad_control"));
-        });
       });
       ws.send(JSON.stringify({ v: 1, type: "open", code, token }));
       const opened = await ready;

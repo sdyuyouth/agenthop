@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { startRelay } from "@agenthop/relay-node";
+import { startHost } from "../src/host.js";
 import { sendMessage } from "../src/send.js";
 import { lineQueue, runSession, sessionPath } from "../src/session.js";
 
@@ -332,6 +333,21 @@ describe("session", () => {
 
     creatorLines.push("/bye");
     await Promise.all([creator, joiner]);
+    await relay.close();
+  });
+
+  it("says the room is taken at once, instead of waiting out the deadline", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "agenthop-session-"));
+    const relay = await startRelay();
+    const code = "1111-acid-acorn-acre";
+    const held = await startHost({ relay: relay.url, code, home: path.join(dir, "held") });
+
+    // The refusal arrives the moment the socket is accepted, before anything has been sent.
+    const started = Date.now();
+    await expect(startHost({ relay: relay.url, code, home: path.join(dir, "second") })).rejects.toThrow(/已经被另一个进程占着/);
+    expect(Date.now() - started).toBeLessThan(5000);
+
+    await held.close();
     await relay.close();
   });
 });
