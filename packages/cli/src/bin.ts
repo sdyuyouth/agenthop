@@ -3,7 +3,7 @@ import { startRelay } from "@agenthop/relay-node";
 import { classifyInput, parseArgs } from "./args.js";
 import { installAgenthop } from "./install.js";
 import { updateAgenthop } from "./update.js";
-import { BYE, runSession } from "./session.js";
+import { BYE, WORKING, runSession } from "./session.js";
 import { version } from "./version.js";
 
 try {
@@ -70,6 +70,10 @@ function printHelp(): void {
     "  加入方读到 peer hello 后判断这段背景是否和自己的上下文相符：",
     "  相符就写一行确认，创建方随后输出 ready；不相符就问用户，不要写标准输入。",
     `  ready 之后对方的每一句是 peer say。写一行 ${BYE} 结束对话。`,
+    "",
+    "  轮到你接话的只有 peer hello、peer confirm、peer say、peer bye 四行。",
+    `  读到 peer say 的第一件事是写一行 ${WORKING} <在做什么、大概多久>，然后再开始干活。`,
+    "  对方那边出现的是 peer working，它不占对方的一轮——所以读到 peer working 时安心等着就行。",
     "  对方会把 bye 说回来，两边各有 local bye 和 peer bye，然后各自退出。",
     "  读到 peer bye 不用回应，程序会自己把 bye 说回去。",
     "",
@@ -85,7 +89,7 @@ function printHelp(): void {
     "  日志：启动后第一行 local log <绝对路径> 就是它，直接告诉用户这个路径。",
     "        创建方 <家目录>/.agenthop/sessions/<房间地址>.create.log，加入方 <房间地址>.join.log。",
     "  每行：<时间> <local|peer> <状态> <正文>（本机时间，带时区偏移）",
-    "  状态：log waiting connected hello confirm ready say bye",
+    "  状态：log waiting connected hello confirm ready say working bye",
     "        reconnecting reconnected undelivered gone expired refused files input-closed",
     "",
     "安装",

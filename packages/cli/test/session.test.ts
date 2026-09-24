@@ -319,6 +319,60 @@ describe("session", () => {
     await relay.close();
   });
 
+  it("carries a receipt under its own state word, both ways", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "agenthop-session-"));
+    const relay = await startRelay();
+    const creatorLines = lineQueue();
+    const joinerLines = lineQueue();
+    const creator = start({ hello: "背景", lines: creatorLines, relay: relay.url, home: path.join(dir, "creator") });
+    const code = await waitForText(path.join(dir, "creator"), "waiting");
+    const joiner = start({ code, lines: joinerLines, relay: relay.url, home: path.join(dir, "joiner") });
+    await waitForText(path.join(dir, "joiner"), "peer hello");
+    joinerLines.push("确认");
+    await waitForText(path.join(dir, "creator"), "ready");
+
+    // The receipt reaches the other side as `working`, never as `say` — the word the waiting
+    // side keys on to decide it is their turn.
+    joinerLines.push("/working 收到，我去查这三个文件，大概两三分钟");
+    await waitForText(path.join(dir, "creator"), "peer working 收到，我去查这三个文件，大概两三分钟");
+    creatorLines.push("/working 我这边也在准备材料");
+    await waitForText(path.join(dir, "joiner"), "peer working 我这边也在准备材料");
+    joinerLines.push("查完了");
+    await waitForText(path.join(dir, "creator"), "peer say 查完了");
+
+    const log = await readFile(sessionPath(path.join(dir, "creator"), addressOf(code), "create"), "utf8");
+    expect(log).toContain("local working 我这边也在准备材料");
+    expect(log).not.toContain("peer say 收到，我去查");
+    // A receipt does not move the conversation along, and it is not the goodbye either.
+    expect(log).not.toContain("peer refused");
+    expect(log.indexOf("peer working")).toBeLessThan(log.indexOf("peer say 查完了"));
+
+    joinerLines.push("/bye");
+    await Promise.all([creator, joiner]);
+    await relay.close();
+  });
+
+  it("sends a receipt written before the channel opens without eating the confirmation", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "agenthop-session-"));
+    const relay = await startRelay();
+    const joinerLines = lineQueue();
+    const creator = start({ hello: "背景", lines: lineQueue(), relay: relay.url, home: path.join(dir, "creator") });
+    const code = await waitForText(path.join(dir, "creator"), "waiting");
+    const joiner = start({ code, lines: joinerLines, relay: relay.url, home: path.join(dir, "joiner") });
+    await waitForText(path.join(dir, "joiner"), "peer hello");
+
+    // An agent that writes a receipt first should not find it spent as the confirmation.
+    joinerLines.push("/working 收到背景，正在核对");
+    joinerLines.push("核对上了，可以开始");
+    await waitForText(path.join(dir, "creator"), "peer working 收到背景，正在核对");
+    await waitForText(path.join(dir, "creator"), "peer confirm 核对上了，可以开始");
+    await waitForText(path.join(dir, "creator"), "local ready");
+
+    joinerLines.push("/bye");
+    await Promise.all([creator, joiner]);
+    await relay.close();
+  });
+
   it("hands the room's history to nobody who lacks the key", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "agenthop-session-"));
     const relay = await startRelay();

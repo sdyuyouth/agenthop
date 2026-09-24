@@ -10,6 +10,13 @@ import { type SessionEvent } from "./talk.js";
 
 /** Written on stdin to end the conversation on purpose. */
 export const BYE = "/bye";
+/**
+ * Written on stdin to say the line arrived and is being worked on. It has its own state word so
+ * the side waiting on it can leave it alone: a receipt that arrives as an ordinary `say` costs
+ * the reader a turn to read the word "收到", and it lands on the very signal they use to decide
+ * whether it is their turn to speak.
+ */
+export const WORKING = "/working";
 
 const LOCAL_POLL_MS = 200;
 const RELAY_POLL_MS = 1000;
@@ -159,6 +166,8 @@ async function createSession(options: SessionOptions, home: string): Promise<voi
           phase = "ready";
         } else if (phase === "ready" && wire.kind === "say") {
           write(log, "peer", "say", wire.text);
+        } else if (wire.kind === "working") {
+          write(log, "peer", "working", wire.text);
         } else if (wire.kind === "other") {
           write(log, "peer", "other", brief(wire.text));
         }
@@ -239,6 +248,8 @@ async function joinSession(options: SessionOptions, home: string): Promise<void>
         phase = "wait-confirm";
       } else if (phase === "ready" && wire.kind === "say") {
         write(log, "peer", "say", wire.text);
+      } else if (wire.kind === "working") {
+        write(log, "peer", "working", wire.text);
       } else if (wire.kind === "other") {
         write(log, "peer", "other", brief(wire.text));
       }
@@ -246,6 +257,13 @@ async function joinSession(options: SessionOptions, home: string): Promise<void>
     const typed = options.lines!.take();
     if (phase === "wait-hello") early.push(...typed);
     else if (phase === "wait-confirm") typed.unshift(...early.splice(0));
+    // A receipt written before the channel is open is still a receipt, not the confirmation the
+    // creator is waiting for. Send it and keep looking for the line that opens the channel.
+    while (phase === "wait-confirm" && isWorking(typed[0] ?? "")) {
+      const noted = isWorking(typed.shift() ?? "")!;
+      await send(workingWire(id, noted.text));
+      write(log, "local", "working", noted.text);
+    }
     if (phase === "wait-confirm" && typed.length > 0) {
       const reply = typed.shift() ?? "";
       if (reply === BYE) {
@@ -285,13 +303,18 @@ function outbox(lines: LineSource, logFile: string): Outbox {
       for (let i = 0; i < texts.length; i++) {
         const text = texts[i] ?? "";
         const bye = text === BYE;
+        const working = !bye && isWorking(text);
         try {
-          await send(bye ? byeWire(id) : sayWire(id, text));
+          if (bye) await send(byeWire(id));
+          else if (working) await send(workingWire(id, working.text));
+          else await send(sayWire(id, text));
         } catch {
           for (const missed of texts.slice(i)) write(logFile, "local", "undelivered", missed);
           return false;
         }
-        write(logFile, "local", bye ? "bye" : "say", bye ? "" : text);
+        if (bye) write(logFile, "local", "bye");
+        else if (working) write(logFile, "local", "working", working.text);
+        else write(logFile, "local", "say", text);
         if (bye) return true;
       }
       if (lines.ended() && !noted) {
@@ -431,10 +454,17 @@ export function stamp(now = new Date()): string {
 }
 
 export type Wire = {
-  kind: "connect" | "hello" | "confirm" | "say" | "bye" | "sealed" | "other";
+  kind: "connect" | "hello" | "confirm" | "say" | "working" | "bye" | "sealed" | "other";
   id: string;
   text: string;
 };
+
+/** `/working` on its own, or with the rest of the line as what is being worked on. */
+function isWorking(text: string): { text: string } | undefined {
+  if (text === WORKING) return { text: "" };
+  if (text.startsWith(`${WORKING} `)) return { text: text.slice(WORKING.length + 1).trim() };
+  return undefined;
+}
 
 /**
  * The joining side stamps every line with the id it made up when it connected, so a third
@@ -442,7 +472,7 @@ export type Wire = {
  * which is what makes it worth checking: forging one means holding the secret.
  */
 export function parseWire(text: string): Wire {
-  const match = text.match(/^\[\[agenthop:(connect|hello|confirm|say|bye|sealed)(?::([A-Za-z0-9-]+))?]] ?([\s\S]*)$/);
+  const match = text.match(/^\[\[agenthop:(connect|hello|confirm|say|working|bye|sealed)(?::([A-Za-z0-9-]+))?]] ?([\s\S]*)$/);
   if (!match) return { kind: "other", id: "", text };
   return { kind: match[1] as Wire["kind"], id: match[2] ?? "", text: match[3] ?? "" };
 }
@@ -465,6 +495,10 @@ function confirmWire(id: string, text: string): string {
 
 export function sayWire(id: string | undefined, text: string): string {
   return wire("say", id, text);
+}
+
+function workingWire(id: string | undefined, text: string): string {
+  return wire("working", id, text);
 }
 
 function byeWire(id?: string): string {

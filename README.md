@@ -115,6 +115,7 @@ agenthop <配对码>
 | `log` `waiting` `connected` `hello` `confirm` `ready` | 配对过程 |
 | `say` | 对话正文 |
 | `bye` | 结束，两边都会出现 |
+| `working` | 对方收到了，正在处理。这一行不需要回应，写一行 `/working <在做什么>` 就能发出自己的 |
 | `reconnecting` `reconnected` | 连接断了，正在用同一个配对码把房间接回来；接回来后对话继续 |
 | `undelivered` | 这一句**没有送到对方**，不要当成已经回复过 |
 | `gone` | 对方不在了（退出、断网，或房间空闲超过十分钟） |
