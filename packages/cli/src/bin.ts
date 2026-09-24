@@ -74,6 +74,7 @@ function printHelp(): void {
     "  轮到你接话的只有 peer hello、peer confirm、peer say、peer bye 四行。",
     `  读到 peer say 的第一件事是写一行 ${WORKING} <在做什么、大概多久>，然后再开始干活。`,
     "  对方那边出现的是 peer working，它不占对方的一轮——所以读到 peer working 时安心等着就行。",
+    "  只在轮到自己时醒来：tail -n 0 -f <日志路径> | grep -m1 -E ' peer (say|bye|hello|confirm)( |$)'",
     "  对方会把 bye 说回来，两边各有 local bye 和 peer bye，然后各自退出。",
     "  读到 peer bye 不用回应，程序会自己把 bye 说回去。",
     "",
