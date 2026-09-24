@@ -1,7 +1,15 @@
 import { WORDLIST } from "./wordlist.js";
 
-const CODE_RE = /^[0-9]{4}-[a-z]{2,}-[a-z]{2,}-[a-z]{2,}$/;
+/**
+ * A pairing code is an address and a secret: `4821-amber-river-maple-k7f3q2mbxz4a6tu5wnhjy2pc3d`.
+ * The address is what the relay routes on. The secret is the key to the conversation and must
+ * never reach the relay, so the two halves are kept apart by type as well as by convention.
+ */
+const ADDRESS_RE = /^[0-9]{4}-[a-z]{2,}-[a-z]{2,}-[a-z]{2,}$/;
+const CODE_RE = /^[0-9]{4}-[a-z]{2,}-[a-z]{2,}-[a-z]{2,}-[a-z2-7]{26}$/;
 const B32 = "abcdefghijklmnopqrstuvwxyz234567";
+/** 16 bytes of base32 is 26 characters, so the secret is exactly one more segment. */
+const SECRET_BYTES = 16;
 
 /** NFKC, trim, casefold, then treat spaces and hyphens as separators. */
 export function normalizeCode(input: string): string {
@@ -12,20 +20,51 @@ export function normalizeCode(input: string): string {
     .join("-");
 }
 
-export function isValidCode(code: string): boolean {
+/** The half the relay is allowed to see: four segments, no secret. */
+export function isRoomAddress(code: string): boolean {
+  return ADDRESS_RE.test(code);
+}
+
+/** A whole pairing code, both halves. */
+export function isPairingCode(code: string): boolean {
   return CODE_RE.test(code);
 }
 
-export function generateCode(bytes: (n: number) => Uint8Array = randomBytes): string {
-  const digits = (readUint(bytes(2)) % 10000).toString().padStart(4, "0");
-  const words = [0, 1, 2].map(() => WORDLIST[readUint(bytes(2)) % WORDLIST.length]!);
-  return `${digits}-${words[0]}-${words[1]}-${words[2]}`;
+export function splitCode(code: string): { address: string; secret: string } {
+  const normalized = normalizeCode(code);
+  if (!isPairingCode(normalized)) throw new Error("invalid_code");
+  const cut = normalized.lastIndexOf("-");
+  return { address: normalized.slice(0, cut), secret: normalized.slice(cut + 1) };
 }
 
-/** SHA-256 of the normalized code, first 10 bytes, lowercase base32. */
-export async function roomIdFromCode(code: string): Promise<string> {
+/** The address of a whole code, or an address handed straight back. Anything else is a mistake. */
+export function addressOf(code: string): string {
   const normalized = normalizeCode(code);
-  if (!isValidCode(normalized)) {
+  if (isRoomAddress(normalized)) return normalized;
+  return splitCode(normalized).address;
+}
+
+export function secretOf(code: string): string {
+  return splitCode(code).secret;
+}
+
+export function generateCode(bytes: (n: number) => Uint8Array = randomBytes): string {
+  for (;;) {
+    const digits = (readUint(bytes(2)) % 10000).toString().padStart(4, "0");
+    const words = [0, 1, 2].map(() => WORDLIST[readUint(bytes(2)) % WORDLIST.length]!);
+    const code = `${digits}-${words[0]}-${words[1]}-${words[2]}-${base32(bytes(SECRET_BYTES))}`;
+    // Never hand out a code the relay would turn away. A single word with a hyphen in it once
+    // made one session in four hundred dead on arrival.
+    if (isPairingCode(code)) return code;
+  }
+}
+
+/** SHA-256 of the room address, first 10 bytes, lowercase base32. */
+export async function roomIdFromCode(address: string): Promise<string> {
+  const normalized = normalizeCode(address);
+  // A whole code is refused rather than trimmed: reaching here with the secret still attached
+  // means a caller is about to put it somewhere the relay can see.
+  if (!isRoomAddress(normalized)) {
     throw new Error("invalid_code");
   }
   const digest = new Uint8Array(
@@ -55,7 +94,9 @@ export function safeEqual(a: string, b: string): boolean {
 }
 
 export function relayEndpoints(relayHttp: string, code: string): { publicBase: string; hostUrl: string } {
-  const normalized = normalizeCode(code);
+  // Both URLs go to the relay, so only the address may go into them. Stripping here as well as
+  // at the caller means a future caller that passes a whole code still cannot leak the secret.
+  const normalized = addressOf(code);
   const url = new URL(relayHttp);
   const publicBase = `${url.origin}/r/${encodeURIComponent(normalized)}/`;
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";

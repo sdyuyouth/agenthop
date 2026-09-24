@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { A2A_PROTOCOL_VERSION, AGENT_CARD_PATH, type AgentCard } from "@a2a-js/sdk";
 import { DefaultRequestHandler, InMemoryTaskStore } from "@a2a-js/sdk/server";
 import { agentCardHandler, jsonRpcHandler, UserBuilder } from "@a2a-js/sdk/server/express";
-import { decodeControl, generateCode, relayEndpoints } from "@agenthop/tunnel";
+import { addressOf, decodeControl, generateCode, relayEndpoints } from "@agenthop/tunnel";
 import express from "express";
 import { WebSocket } from "ws";
 import { HostBridge } from "./bridge.js";
@@ -49,7 +49,9 @@ export type RunningHost = {
 };
 
 export async function startHost(options: HostOptions = {}): Promise<RunningHost> {
-  const code = options.code ?? generateCode();
+  // Only the address half ever gets this far. Everything downstream — the relay URLs, the open
+  // frame, RunningHost.code — is then address-only by construction rather than by care.
+  const code = addressOf(options.code ?? generateCode());
   // One token for the life of the room. Reopening the room after a blip shows the same one, so
   // the relay can tell the host coming back from someone else who picked up the code.
   const token = randomBytes(32).toString("base64url");

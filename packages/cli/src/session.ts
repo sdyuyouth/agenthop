@@ -2,8 +2,10 @@ import { appendFileSync, mkdirSync, writeSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
+import { generateCode, splitCode } from "@agenthop/tunnel";
 import { readQueue, roomBase, sendMessage } from "./send.js";
 import { RECOVER_MS, startHost, type RunningHost } from "./host.js";
+import { channel, type Channel } from "./seal.js";
 import { type SessionEvent } from "./talk.js";
 
 /** Written on stdin to end the conversation on purpose. */
@@ -66,25 +68,39 @@ async function createSession(options: SessionOptions, home: string): Promise<voi
   if (!hello) throw new Error("usage: agenthop <任务背景>");
   let lost = "";
   let peerId: string | undefined;
-  const logFile = () => sessionPath(home, host.code, "create");
+  // The code is made here rather than in the host, because only this side may hold both halves
+  // of it. The host is handed the address alone and never learns the secret.
+  const pairingCode = generateCode();
+  const { address } = splitCode(pairingCode);
+  const box = channel(pairingCode, "create");
+  const logFile = () => sessionPath(home, address, "create");
   const host = await startHost({
+    code: address,
     relay: options.relay,
     pass: options.pass,
     home,
     keepFiles: options.keepFiles,
     recoverMs: options.recoverMs,
     accept: (text) => {
-      const wire = parseWire(text);
+      // Belonging to this conversation now means holding the secret. Someone who only knows the
+      // address cannot produce a line that opens, so this is where they stop.
+      let wire: Wire;
+      try {
+        wire = parseWire(box.open(text).wire);
+      } catch {
+        return false;
+      }
       if (peerId === undefined) {
         if (wire.kind === "connect") peerId = wire.id;
         return true;
       }
-      // An older peer signs nothing, so there is nothing to tell apart.
-      if (peerId === "") return true;
       if (wire.kind === "connect") return false;
       return wire.id === peerId;
     },
-    onRefused: (reason, text) => write(logFile(), "peer", "refused", text ? `${reason}：${brief(text)}` : reason),
+    onRefused: (reason, text) => {
+      const shown = readable(box, text);
+      write(logFile(), "peer", "refused", shown ? `${reason}：${shown}` : reason);
+    },
     onReconnecting: (reason) => write(logFile(), "local", "reconnecting", `${reason}，正在用同一个配对码把房间接回来`),
     onReconnected: () => write(logFile(), "local", "reconnected", "房间接回来了，对话可以继续"),
     onGone: (reason) => {
@@ -94,8 +110,9 @@ async function createSession(options: SessionOptions, home: string): Promise<voi
   const log = logFile();
   // The first line says where the rest of them are, so nobody has to work the path out.
   write(log, "local", "log", log);
-  write(log, "local", "waiting", host.code);
-  const say = (wire: string) => sayLocal(host, wire);
+  // The whole code, both halves: this line is what the person hands to the other side.
+  write(log, "local", "waiting", pairingCode);
+  const say = (wire: string) => sayLocal(host, box.seal(wire));
   const out = outbox(options.lines!, log);
   let after = 0;
   let saidBye = 0;
@@ -103,7 +120,7 @@ async function createSession(options: SessionOptions, home: string): Promise<voi
   try {
     for (;;) {
       if (options.signal?.aborted) {
-        await farewell(say, out, log, phase === "ready" && !saidBye, LINGER_MS);
+        await farewell(say, out, log, phase === "ready" && !saidBye, LINGER_MS, undefined);
         return;
       }
       if (lost) {
@@ -118,7 +135,8 @@ async function createSession(options: SessionOptions, home: string): Promise<voi
       for (const event of await pollLocal(host, after)) {
         after = event.seq;
         if (event.from !== "peer") continue;
-        const wire = parseWire(event.text);
+        const wire = unseal(box, log, event.text);
+        if (!wire) continue;
         noteFiles(log, event, options.keepFiles === true);
         if (wire.kind === "bye") {
           write(log, "peer", "bye", wire.text);
@@ -159,9 +177,13 @@ async function createSession(options: SessionOptions, home: string): Promise<voi
 
 async function joinSession(options: SessionOptions, home: string): Promise<void> {
   const code = options.code ?? "";
-  const log = sessionPath(home, code, "join");
+  // Only the address goes into the room's name and its URLs; the secret stays in this process.
+  const { address } = splitCode(code);
+  const box = channel(code, "join");
+  const log = sessionPath(home, address, "join");
   const id = randomUUID().slice(0, 8);
-  const send = (text: string) => sendMessage({ code, text, relay: options.relay, pass: options.pass });
+  const send = (text: string) =>
+    sendMessage({ code: address, text: box.seal(text), relay: options.relay, pass: options.pass });
   write(log, "local", "log", log);
   try {
     await send(connectWire(id));
@@ -170,7 +192,7 @@ async function joinSession(options: SessionOptions, home: string): Promise<void>
   }
   write(log, "local", "connected");
   const out = outbox(options.lines!, log);
-  const base = roomBase(options.relay, code);
+  const base = roomBase(options.relay, address);
   let after = 0;
   let failingSince = 0;
   let saidBye = 0;
@@ -178,7 +200,7 @@ async function joinSession(options: SessionOptions, home: string): Promise<void>
   const early: string[] = [];
   for (;;) {
     if (options.signal?.aborted) {
-      await farewell(send, out, log, phase === "ready" && !saidBye, 0);
+      await farewell(send, out, log, phase === "ready" && !saidBye, 0, id);
       return;
     }
     let events: SessionEvent[];
@@ -202,7 +224,8 @@ async function joinSession(options: SessionOptions, home: string): Promise<void>
     for (const event of events) {
       after = event.seq;
       if (event.from !== "host") continue;
-      const wire = parseWire(event.text);
+      const wire = unseal(box, log, event.text);
+      if (!wire) continue;
       if (wire.kind === "bye") {
         write(log, "peer", "bye", wire.text);
         out.reportUnsent();
@@ -290,15 +313,54 @@ async function farewell(
   logFile: string,
   owed: boolean,
   linger: number,
+  // The joining side signs its lines, and an unsigned goodbye is one the creator turns away —
+  // so a Ctrl-C used to leave the other side waiting out the clock for a bye that was sent.
+  id: string | undefined,
 ): Promise<void> {
   out.reportUnsent();
   if (!owed) return;
   try {
-    await send(byeWire());
+    await send(byeWire(id));
     write(logFile, "local", "bye");
     if (linger) await delay(linger);
   } catch {
     write(logFile, "local", "undelivered", BYE);
+  }
+}
+
+/**
+ * Open one incoming line. Every way of turning one away writes a line saying so — a conversation
+ * that quietly loses a sentence is worse than one that says it lost it.
+ */
+function unseal(box: Channel, logFile: string, text: string): Wire | undefined {
+  let opened: { counter: number; wire: string };
+  try {
+    opened = box.open(text);
+  } catch {
+    write(logFile, "peer", "refused", `这一句解不开（密钥不对或被篡改）：${brief(text)}`);
+    return undefined;
+  }
+  // The relay carries these lines and could hand one over twice, putting an old answer under a
+  // new question. Counters only ever go up; a gap is a send that failed, a repeat is a replay.
+  if (!box.fresh(opened.counter)) {
+    write(logFile, "peer", "refused", `重复的消息，已经忽略（可能是中继重放）：${brief(opened.wire)}`);
+    return undefined;
+  }
+  const wire = parseWire(opened.wire);
+  if (wire.kind === "sealed") {
+    write(logFile, "peer", "refused", "一层里面还是一层，已经忽略");
+    return undefined;
+  }
+  return wire;
+}
+
+/** What a line the room turned away should look like in the log, when it can be read at all. */
+function readable(box: Channel, text: string): string {
+  if (!text) return "";
+  try {
+    return brief(box.open(text).wire);
+  } catch {
+    return "（无法解密）";
   }
 }
 
@@ -368,15 +430,21 @@ export function stamp(now = new Date()): string {
   return `${day}T${clock}${sign}${pad(Math.floor(size / 60))}:${pad(size % 60)}`;
 }
 
+export type Wire = {
+  kind: "connect" | "hello" | "confirm" | "say" | "bye" | "sealed" | "other";
+  id: string;
+  text: string;
+};
+
 /**
  * The joining side stamps every line with the id it made up when it connected, so a third
- * person holding the same code cannot be mistaken for the peer. Lines without an id come from
- * an older version and are taken as they are.
+ * person holding the same code cannot be mistaken for the peer. The id travels inside the seal,
+ * which is what makes it worth checking: forging one means holding the secret.
  */
-export function parseWire(text: string): { kind: "connect" | "hello" | "confirm" | "say" | "bye" | "other"; id: string; text: string } {
-  const match = text.match(/^\[\[agenthop:(connect|hello|confirm|say|bye)(?::([A-Za-z0-9-]+))?]] ?([\s\S]*)$/);
+export function parseWire(text: string): Wire {
+  const match = text.match(/^\[\[agenthop:(connect|hello|confirm|say|bye|sealed)(?::([A-Za-z0-9-]+))?]] ?([\s\S]*)$/);
   if (!match) return { kind: "other", id: "", text };
-  return { kind: match[1] as "connect", id: match[2] ?? "", text: match[3] ?? "" };
+  return { kind: match[1] as Wire["kind"], id: match[2] ?? "", text: match[3] ?? "" };
 }
 
 function wire(kind: string, id: string | undefined, text: string): string {

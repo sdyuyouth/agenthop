@@ -182,6 +182,23 @@ describe("node relay", () => {
     host.close();
   });
 
+  it("refuses a code that still carries its secret", async () => {
+    // The relay routes on the address alone. A client that let the secret reach a URL is broken,
+    // and it should find that out here rather than quietly hand the key over.
+    const relay = await startRelay();
+    openRelays.push(relay);
+    const whole = "1111-acid-acorn-acre-k7f3q2mbxz4a6tu5wnhjy2pc3d";
+
+    expect((await fetch(`${relay.url}/r/${whole}/`)).status).toBe(400);
+    const ws = new WebSocket(`${relay.url.replace("http", "ws")}/host/${whole}`);
+    await expect(
+      new Promise((resolve, reject) => {
+        ws.once("open", () => resolve("opened"));
+        ws.once("error", reject);
+      }),
+    ).rejects.toThrow();
+  });
+
   it("forgets the room, and the token that held it, once it expires", async () => {
     // A room outlives its socket so its host can come back. Something has to end it, or a
     // pairing code that comes round again finds its own room already claimed by a token

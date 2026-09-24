@@ -3,14 +3,44 @@ import { classifyInput, parseArgs } from "../src/args.js";
 
 describe("arguments", () => {
   it("joins a room however the pairing code was written down", () => {
-    for (const written of ["1720-spiny-patch-easel", "1720-SPINY-PATCH-EASEL", "1720 spiny patch easel"]) {
-      expect(classifyInput(written.split(" "))).toEqual({ kind: "join", code: "1720-spiny-patch-easel" });
+    const written = [
+      "1720-spiny-patch-easel-k7f3q2mbxz4a6tu5wnhjy2pc3d",
+      "1720-SPINY-PATCH-EASEL-K7F3Q2MBXZ4A6TU5WNHJY2PC3D",
+      "1720 spiny patch easel k7f3q2mbxz4a6tu5wnhjy2pc3d",
+    ];
+    for (const text of written) {
+      expect(classifyInput(text.split(" "))).toEqual({
+        kind: "join",
+        code: "1720-spiny-patch-easel-k7f3q2mbxz4a6tu5wnhjy2pc3d",
+      });
     }
+  });
+
+  it("tells a code from before the secret apart from one that was typed wrong", () => {
+    // A code that stops after the words is a v0.3 code, or one that got cut short on the way
+    // over. Calling that a typo would send someone looking for the wrong mistake.
+    expect(() => classifyInput(["1720-spiny-patch-easel"])).toThrow(/少了最后一段密钥/);
+    expect(() => classifyInput(["1720 spiny patch easel"])).toThrow(/少了最后一段密钥/);
   });
 
   it("refuses something that starts like a code instead of opening a room with it", () => {
     expect(() => classifyInput(["1720-spiny-patch"])).toThrow(/不像一个配对码/);
     expect(() => classifyInput(["1720-spiny-patch-easel-extra"])).toThrow(/不像一个配对码/);
+    // Right shape, wrong alphabet, and one character short or long.
+    expect(() => classifyInput(["1720-spiny-patch-easel-k7f3q2mbxz4a6tu5wnhjy2pc31"])).toThrow(/不像一个配对码/);
+    expect(() => classifyInput(["1720-spiny-patch-easel-k7f3q2mbxz4a6tu5wnhjy2pc3"])).toThrow(/不像一个配对码/);
+    expect(() => classifyInput(["1720-spiny-patch-easel-k7f3q2mbxz4a6tu5wnhjy2pc3dd"])).toThrow(/不像一个配对码/);
+  });
+
+  it("does not echo a nearly-right code back in full", () => {
+    // The error goes to standard output, which is the agent's record of the session.
+    const secret = "k7f3q2mbxz4a6tu5wnhjy2pc3dd";
+    expect(() => classifyInput([`1720-spiny-patch-easel-${secret}`])).toThrow(/1720-spiny-patch-easel-…/);
+    try {
+      classifyInput([`1720-spiny-patch-easel-${secret}`]);
+    } catch (error) {
+      expect((error as Error).message).not.toContain(secret);
+    }
   });
 
   it("treats ordinary text as the task background", () => {

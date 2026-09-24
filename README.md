@@ -17,7 +17,7 @@ agenthop 把这件事变成：一方创建房间拿到配对码，另一方用�
 下面是 Claude Code 和 grok CLI 之间一次真实对话的节选，创建方看到的内容（也是它的标准输出）：
 
 ```text
-15:35:02 local waiting 0064-fresh-genre-bunt
+15:35:02 local waiting 0064-fresh-genre-bunt-k7f3q2mbxz4a6tu5wnhjy2pc3d
 15:38:00 peer connected
 15:38:00 local hello 我是 Cooper 这边的 Claude Code。刚发布了 agenthop v0.3.2，想用一次真实对话验证…
 15:38:24 peer confirm 相符：我是 Cooper 本机上的 grok CLI，来配合验证 agenthop v0.3.2。
@@ -92,7 +92,7 @@ agenthop "<任务背景>"
 agenthop <配对码>
 ```
 
-配对码不区分大小写，用空格或连字符隔开都行。
+配对码不区分大小写，用空格或连字符隔开都行，但要**整行发过去**——最后那一段是这次对话的密钥，少了它加入不了。
 
 加入方读到 `peer hello` 后，由那边的 agent 判断这段背景是否和自己的上下文相符：相符就写一句确认，创建方随后输出 `ready`；不相符就去问用户，不要往标准输入写东西。`ready` 之后，对方的每一句都是 `peer say`。
 
@@ -102,7 +102,7 @@ agenthop <配对码>
 
 ### 日志与状态
 
-启动后的第一行是日志的绝对路径（`local log <路径>`）。日志按房间和哪一端命名：创建方 `<配对码>.create.log`，加入方 `<配对码>.join.log`，都在 `<家目录>/.agenthop/sessions/`，两端在同一台机器上也不会写进同一个文件。内容和标准输出一样：
+启动后的第一行是日志的绝对路径（`local log <路径>`）。日志按房间和哪一端命名：创建方 `<房间地址>.create.log`，加入方 `<房间地址>.join.log`（房间地址是配对码去掉密钥的前四段），都在 `<家目录>/.agenthop/sessions/`，两端在同一台机器上也不会写进同一个文件。内容和标准输出一样：
 
 ```text
 <时间> <local|peer> <状态> <正文>
@@ -119,7 +119,7 @@ agenthop <配对码>
 | `undelivered` | 这一句**没有送到对方**，不要当成已经回复过 |
 | `gone` | 对方不在了（退出、断网，或房间空闲超过十分钟） |
 | `expired` | 一直没有人用这个配对码加入，房间过期了 |
-| `refused` | 这一句既没进对话也没落盘：第三个人拿着同一个配对码，或者用量到了上限 |
+| `refused` | 这一句既没进对话也没落盘：对方拿不出配对码里的密钥、重复的一句，或者用量到了上限 |
 | `files` | 对方带了附件，默认只记名字不保存，要保存加 `--accept-files` |
 | `input-closed` | 自己的标准输入被关掉了，只能收听 |
 
@@ -127,12 +127,12 @@ agenthop <配对码>
 
 ```
 你的机器                        中继                        对方的机器
-agenthop ──WebSocket──▶  /host/<配对码>  ◀──HTTP──  agenthop
+agenthop ──WebSocket──▶  /host/<房间地址>  ◀──HTTP──  agenthop
    │                     （只转发字节）                        │
    └─ 本地 A2A server                                          └─ 轮询房间读增量
 ```
 
-创建方在本机起一个 [A2A](https://a2a-protocol.org/latest/specification/) server，并用一条 WebSocket 连到中继；对方发往 `/r/<配对码>/...` 的 HTTP 经这条隧道落到本机。中继只转发字节，不解析消息。房间在十分钟没有转发后消失，所以配对码要在十分钟内用掉。
+创建方在本机起一个 [A2A](https://a2a-protocol.org/latest/specification/) server，并用一条 WebSocket 连到中继；对方发往 `/r/<房间地址>/...` 的 HTTP 经这条隧道落到本机。中继只转发字节，不解析消息，也读不懂：正文在离开本机之前就用配对码里的密钥封好了。房间在十分钟没有转发后消失，所以配对码要在十分钟内用掉。
 
 隧道的帧格式、房间与限流规则写在 [SPEC.md](SPEC.md)。
 
@@ -169,7 +169,11 @@ pnpm --filter @agenthop/relay-cf exec wrangler secret put RELAY_PASS
 
 ## 安全
 
-配对码就是进入房间的唯一凭证，它是一次性的。使用托管中继时 TLS 在 Cloudflare 终结，**这一版没有端到端加密**，中继在技术上可以读到消息正文。详见 [SECURITY.md](SECURITY.md)。
+配对码就是进入房间的唯一凭证，它是一次性的。**正文是端到端加密的**：配对码分成两半，前四段是房间地址、中继按它路由，最后一段是密钥、从不发给中继，所以托管中继转发的是它读不懂的密文。中继仍然看得到房间地址、消息条数、每条的大小和时间，也仍然可以丢弃或延迟消息。没有前向保密，附件的字节也不加密。详见 [SECURITY.md](SECURITY.md)。
+
+### 为什么配对码这么长
+
+早先的配对码只有四位数字加三个词，短到可以念出来。但房间地址就是这个码的哈希，而它的取值空间小到能离线反推——只要密钥是从这个码派生的，就等于没有密钥。而 agenthop 的码从来不是念出来的，它是从一个 agent 的终端复制、粘贴到另一个 agent 的窗口里的，所以加长它几乎没有代价。现在码的前四段仍然是房间地址，后面多出来的那一段是 128 位的随机密钥。
 
 ## 开发
 
@@ -187,4 +191,4 @@ pnpm test
 
 ---
 
-**In English:** agenthop lets two agents on machines without public addresses talk to each other. One side runs `agenthop "<background>"` and gets a short pairing code; the other runs `agenthop <code>`. A relay forwards bytes between them — the messages themselves are [A2A](https://a2a-protocol.org/latest/specification/) JSON-RPC and the relay does not parse them. The tunnel format, room lifetime and rate limits are specified in [SPEC.md](SPEC.md), which is in English. Note that the hosted relay terminates TLS and this version has no end-to-end encryption.
+**In English:** agenthop lets two agents on machines without public addresses talk to each other. One side runs `agenthop "<background>"` and gets a short pairing code; the other runs `agenthop <code>`. A relay forwards bytes between them — the messages themselves are [A2A](https://a2a-protocol.org/latest/specification/) JSON-RPC and the relay does not parse them. The tunnel format, room lifetime and rate limits are specified in [SPEC.md](SPEC.md), which is in English. Message bodies are encrypted end to end: the pairing code is an address the relay routes on plus a secret that never leaves the two machines, so the relay forwards ciphertext it cannot read. It still sees the room address, message sizes and timing. There is no forward secrecy.

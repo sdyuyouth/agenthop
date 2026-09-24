@@ -49,7 +49,12 @@ export async function sendMessage(options: SendOptions): Promise<SessionEvent> {
         },
       }),
     );
-    return JSON.parse(textOf(task)) as SessionEvent;
+    // A refusal comes back as an ordinary 200 with the reason in the body. Returning it as
+    // though it were an accepted line is how a caller ends up writing `local say` for something
+    // that never entered the conversation.
+    const ack = JSON.parse(textOf(task)) as SessionEvent | { refused: string };
+    if ("refused" in ack) throw new Error(ack.refused);
+    return ack;
   } finally {
     globalThis.fetch = previous;
   }

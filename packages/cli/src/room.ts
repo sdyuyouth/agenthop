@@ -17,7 +17,9 @@ export type RoomLimits = { bytes: number; messages: number; textBytes: number };
 export const DEFAULT_LIMITS: RoomLimits = {
   bytes: 8 * 1024 * 1024,
   messages: 2000,
-  textBytes: 64 * 1024,
+  // Counted on what arrives, which is ciphertext: a 64 KiB line seals to about 87 KiB. Leaving
+  // this at 64 KiB would quietly make the documented limit a lie by a third.
+  textBytes: 96 * 1024,
 };
 
 export type RoomOptions = {
@@ -87,7 +89,7 @@ export class Room {
   /** Reasons an incoming line is not part of this conversation, checked before anything is kept. */
   private refuse(message: HopMessage): string | undefined {
     if (this.options.accept && !this.options.accept(message.text)) {
-      return "另一个人拿着同一个配对码说话，已经忽略";
+      return "有人用这个房间地址说话，但拿不出配对码里的密钥，已经忽略";
     }
     const size = Buffer.byteLength(message.text) + message.files.reduce((sum, file) => sum + file.bytes.byteLength, 0);
     if (Buffer.byteLength(message.text) > this.limits.textBytes) {

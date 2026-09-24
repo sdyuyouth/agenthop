@@ -4,7 +4,9 @@ import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { startRelay } from "@agenthop/relay-node";
 import { startHost } from "../src/host.js";
-import { sendMessage } from "../src/send.js";
+import { readQueue, roomBase, sendMessage } from "../src/send.js";
+import { addressOf } from "@agenthop/tunnel";
+import { channel } from "../src/seal.js";
 import { lineQueue, runSession, sessionPath } from "../src/session.js";
 
 /**
@@ -52,7 +54,7 @@ describe("session", () => {
     await waitForText(path.join(dir, "creator"), "peer say 近况如何");
     creatorLines.push("下一句");
     await waitForText(path.join(dir, "creator"), "local say 下一句");
-    const creatorLog = await readFile(sessionPath(path.join(dir, "creator"), code, "create"), "utf8");
+    const creatorLog = await readFile(sessionPath(path.join(dir, "creator"), addressOf(code), "create"), "utf8");
     expect(creatorLog).toContain("peer connected");
     expect(creatorLog).not.toContain("local connected");
     expect(creatorLog).toContain("peer confirm 确认建立通道");
@@ -82,7 +84,7 @@ describe("session", () => {
     });
     await waitForText(path.join(dir, "joiner"), "peer hello");
     await delay(400);
-    const creatorLog = await readFile(sessionPath(path.join(dir, "creator"), code, "create"), "utf8");
+    const creatorLog = await readFile(sessionPath(path.join(dir, "creator"), addressOf(code), "create"), "utf8");
     expect(creatorLog).not.toContain("ready");
     expect(creatorLog).not.toContain("confirm");
     stop.abort();
@@ -111,11 +113,11 @@ describe("session", () => {
       await Promise.all([creator, joiner]);
 
       for (const side of ["creator", "joiner"] as const) {
-        const log = await readFile(sessionPath(path.join(dir, side), code, side === "creator" ? "create" : "join"), "utf8");
+        const log = await readFile(sessionPath(path.join(dir, side), addressOf(code), side === "creator" ? "create" : "join"), "utf8");
         expect(log, `${side} log when ${opener} opened the goodbye`).toContain("local bye");
         expect(log, `${side} log when ${opener} opened the goodbye`).toContain("peer bye");
       }
-      const openerLog = await readFile(sessionPath(path.join(dir, opener), code, opener === "creator" ? "create" : "join"), "utf8");
+      const openerLog = await readFile(sessionPath(path.join(dir, opener), addressOf(code), opener === "creator" ? "create" : "join"), "utf8");
       expect(openerLog.indexOf("local bye")).toBeLessThan(openerLog.indexOf("peer bye"));
       await relay.close();
     }
@@ -133,15 +135,17 @@ describe("session", () => {
       byeWaitMs: 500,
     });
     const code = await waitForText(path.join(dir, "creator"), "waiting");
-    // A peer that connects and confirms but never reads the room again.
-    await sendMessage({ code, text: "[[agenthop:connect]]", relay: relay.url });
+    // A peer that connects and confirms but never reads the room again. It holds the secret, so
+    // one channel for both lines: a second channel would restart the counter and look replayed.
+    const peer = channel(code, "join");
+    await sendMessage({ code: addressOf(code), text: peer.seal("[[agenthop:connect:abc123]]"), relay: relay.url });
     await waitForText(path.join(dir, "creator"), "local hello");
-    await sendMessage({ code, text: "[[agenthop:confirm]] 确认", relay: relay.url });
+    await sendMessage({ code: addressOf(code), text: peer.seal("[[agenthop:confirm:abc123]] 确认"), relay: relay.url });
     await waitForText(path.join(dir, "creator"), "ready");
 
     creatorLines.push("/bye");
     await creator;
-    const log = await readFile(sessionPath(path.join(dir, "creator"), code, "create"), "utf8");
+    const log = await readFile(sessionPath(path.join(dir, "creator"), addressOf(code), "create"), "utf8");
     expect(log).toContain("local bye");
     expect(log).toContain("peer gone 对方没有把告别说回来");
     await relay.close();
@@ -187,7 +191,7 @@ describe("session", () => {
     await relay.close();
     await waitForText(path.join(dir, "creator"), "local expired");
     await creator;
-    const log = await readFile(sessionPath(path.join(dir, "creator"), code, "create"), "utf8");
+    const log = await readFile(sessionPath(path.join(dir, "creator"), addressOf(code), "create"), "utf8");
     expect(log).not.toContain("peer gone");
     expect(log).toContain("配对码");
   });
@@ -237,10 +241,21 @@ describe("session", () => {
     joinerLines.push("确认");
     await waitForText(path.join(dir, "creator"), "ready");
 
-    await sendMessage({ code, text: "[[agenthop:say:stranger]] 我是第三个人", relay: relay.url });
+    const address = addressOf(code);
+    // Someone who only knows the room address, and so cannot seal anything. They are told they
+    // were turned away rather than left believing they had spoken.
+    await expect(
+      sendMessage({ code: address, text: "[[agenthop:say:stranger]] 我是第三个人", relay: relay.url }),
+    ).rejects.toThrow(/密钥/);
+    // And someone who guessed a secret for the same address, which reads no better.
+    const guesser = channel(`${address}-aaaaaaaaaaaaaaaaaaaaaaaaaa`, "join");
+    await expect(
+      sendMessage({ code: address, text: guesser.seal("[[agenthop:say:stranger]] 我也是"), relay: relay.url }),
+    ).rejects.toThrow(/密钥/);
     await waitForText(path.join(dir, "creator"), "peer refused");
-    const log = await readFile(sessionPath(path.join(dir, "creator"), code, "create"), "utf8");
+    const log = await readFile(sessionPath(path.join(dir, "creator"), address, "create"), "utf8");
     expect(log).not.toContain("peer say 我是第三个人");
+    expect(log).not.toContain("peer say 我也是");
 
     joinerLines.push("/bye");
     await Promise.all([creator, joiner]);
@@ -304,6 +319,107 @@ describe("session", () => {
     await relay.close();
   });
 
+  it("hands the room's history to nobody who lacks the key", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "agenthop-session-"));
+    const relay = await startRelay();
+    const creatorLines = lineQueue();
+    const joinerLines = lineQueue();
+    const creator = start({ hello: "我需要向对方了解鲁越森", lines: creatorLines, relay: relay.url, home: path.join(dir, "creator") });
+    const code = await waitForText(path.join(dir, "creator"), "waiting");
+    const joiner = start({ code, lines: joinerLines, relay: relay.url, home: path.join(dir, "joiner") });
+    await waitForText(path.join(dir, "joiner"), "peer hello");
+    joinerLines.push("确认建立通道");
+    await waitForText(path.join(dir, "creator"), "ready");
+    creatorLines.push("这一句是机密");
+    await waitForText(path.join(dir, "joiner"), "peer say 这一句是机密");
+
+    // The whole history, read the way anyone holding the address could read it.
+    const queue = await readQueue(roomBase(relay.url, addressOf(code)));
+    expect(queue.events.length).toBeGreaterThan(2);
+    for (const event of queue.events) expect(event.text.startsWith("[[agenthop:sealed]] ")).toBe(true);
+    const everything = queue.events.map((event) => event.text).join("\n");
+    expect(everything).not.toContain("我需要向对方了解鲁越森");
+    expect(everything).not.toContain("确认建立通道");
+    expect(everything).not.toContain("这一句是机密");
+    expect(everything).not.toContain("[[agenthop:say");
+
+    joinerLines.push("/bye");
+    await Promise.all([creator, joiner]);
+    await relay.close();
+  });
+
+  it("refuses a line the relay hands over a second time", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "agenthop-session-"));
+    const relay = await startRelay();
+    const creatorLines = lineQueue();
+    const joinerLines = lineQueue();
+    const creator = start({ hello: "背景", lines: creatorLines, relay: relay.url, home: path.join(dir, "creator") });
+    const code = await waitForText(path.join(dir, "creator"), "waiting");
+    const joiner = start({ code, lines: joinerLines, relay: relay.url, home: path.join(dir, "joiner") });
+    await waitForText(path.join(dir, "joiner"), "peer hello");
+    joinerLines.push("确认");
+    await waitForText(path.join(dir, "creator"), "ready");
+    joinerLines.push("确认，可以");
+    await waitForText(path.join(dir, "creator"), "peer say 确认，可以");
+
+    // Take the joiner's own sealed line off the room and play it back, the way a relay could.
+    const queue = await readQueue(roomBase(relay.url, addressOf(code)));
+    const replayed = queue.events.filter((event) => event.from === "peer").at(-1)!.text;
+    await sendMessage({ code: addressOf(code), text: replayed, relay: relay.url });
+    await waitForText(path.join(dir, "creator"), "peer refused 重复的消息");
+
+    joinerLines.push("/bye");
+    await Promise.all([creator, joiner]);
+    await relay.close();
+  });
+
+  it("still says goodbye when the joining side is interrupted", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "agenthop-session-"));
+    const relay = await startRelay();
+    const joinerLines = lineQueue();
+    const stop = new AbortController();
+    const creator = start({ hello: "背景", lines: lineQueue(), relay: relay.url, home: path.join(dir, "creator") });
+    const code = await waitForText(path.join(dir, "creator"), "waiting");
+    const joiner = start({ code, lines: joinerLines, relay: relay.url, home: path.join(dir, "joiner"), signal: stop.signal });
+    await waitForText(path.join(dir, "joiner"), "peer hello");
+    joinerLines.push("确认");
+    await waitForText(path.join(dir, "creator"), "ready");
+
+    // Ctrl-C on the joining side. Its goodbye is signed like every other line it sends, so the
+    // creator takes it instead of sitting out the clock waiting for one.
+    stop.abort();
+    await waitForText(path.join(dir, "creator"), "peer bye");
+    const log = await readFile(sessionPath(path.join(dir, "creator"), addressOf(code), "create"), "utf8");
+    expect(log).not.toContain("peer refused");
+    expect(log).not.toContain("peer gone");
+
+    await Promise.all([creator, joiner]);
+    await relay.close();
+  });
+
+  it("carries a line right up to the documented size", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "agenthop-session-"));
+    const relay = await startRelay();
+    const creatorLines = lineQueue();
+    const joinerLines = lineQueue();
+    const creator = start({ hello: "背景", lines: creatorLines, relay: relay.url, home: path.join(dir, "creator") });
+    const code = await waitForText(path.join(dir, "creator"), "waiting");
+    const joiner = start({ code, lines: joinerLines, relay: relay.url, home: path.join(dir, "joiner") });
+    await waitForText(path.join(dir, "joiner"), "peer hello");
+    joinerLines.push("确认");
+    await waitForText(path.join(dir, "creator"), "ready");
+
+    // 64 KiB is what the help text promises. Sealed it is about 87 KiB, which is what the room
+    // actually measures — the two numbers have to stay far enough apart.
+    const long = "x".repeat(64 * 1024);
+    joinerLines.push(long);
+    await waitForText(path.join(dir, "creator"), `peer say ${long}`);
+
+    joinerLines.push("/bye");
+    await Promise.all([creator, joiner]);
+    await relay.close();
+  });
+
   it("gives each end of a conversation its own log, even on one machine", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "agenthop-session-"));
     const home = path.join(dir, "shared");
@@ -320,16 +436,16 @@ describe("session", () => {
     creatorLines.push("一句话");
     await waitForText(home, "peer say 一句话");
 
-    const mine = await readFile(sessionPath(home, code, "create"), "utf8");
-    const theirs = await readFile(sessionPath(home, code, "join"), "utf8");
+    const mine = await readFile(sessionPath(home, addressOf(code), "create"), "utf8");
+    const theirs = await readFile(sessionPath(home, addressOf(code), "join"), "utf8");
     expect(mine).toContain("local waiting");
     expect(mine).toContain("local say 一句话");
     expect(mine).not.toContain("peer say 一句话");
     expect(theirs).toContain("peer say 一句话");
     expect(theirs).not.toContain("local waiting");
     // Each log opens by saying where it is.
-    expect(mine.split("\n")[0]).toContain(`local log ${sessionPath(home, code, "create")}`);
-    expect(theirs.split("\n")[0]).toContain(`local log ${sessionPath(home, code, "join")}`);
+    expect(mine.split("\n")[0]).toContain(`local log ${sessionPath(home, addressOf(code), "create")}`);
+    expect(theirs.split("\n")[0]).toContain(`local log ${sessionPath(home, addressOf(code), "join")}`);
 
     creatorLines.push("/bye");
     await Promise.all([creator, joiner]);
@@ -365,7 +481,9 @@ async function waitForText(home: string, text: string): Promise<string> {
     for (const file of files) {
       const body = await readFile(path.join(home, "sessions", file), "utf8");
       const line = body.split("\n").find((candidate) => candidate.includes(text));
-      if (line) return file.replace(/\.(create|join)\.log$/, "");
+      // The whole pairing code, read off the line the creator prints it on. The file is named
+      // after the room address alone, so its name no longer carries the secret.
+      if (line) return body.match(/ local waiting (\S+)/)?.[1] ?? "";
     }
     await delay(50);
   }

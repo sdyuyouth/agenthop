@@ -1,4 +1,4 @@
-import { isValidCode, normalizeCode } from "@agenthop/tunnel";
+import { isPairingCode, isRoomAddress, normalizeCode } from "@agenthop/tunnel";
 
 export type Flags = {
   relay?: string;
@@ -73,9 +73,9 @@ export type Input =
   | { kind: "help" };
 
 /**
- * A pairing code is four digits and three words. Case, spaces and hyphens do not matter,
- * so `1720-Spiny-Patch-Easel` and `"1720 spiny patch easel"` both join. Anything that starts
- * like a code but is not one is an error, never a new room.
+ * A pairing code is four digits, three words and a secret. Case, spaces and hyphens do not
+ * matter, so `1720-Spiny-Patch-Easel-<secret>` and the same thing typed with spaces both join.
+ * Anything that starts like a code but is not one is an error, never a new room.
  */
 export function classifyInput(positionals: string[]): Input {
   const first = positionals[0] ?? "";
@@ -85,8 +85,20 @@ export function classifyInput(positionals: string[]): Input {
   const joined = positionals.join(" ");
   if (looksLikeCode(joined)) {
     const code = normalizeCode(joined);
-    if (!isValidCode(code)) {
-      throw new Error(`这不像一个配对码：${joined}\n配对码是四位数字加三个英文词，例如 1720-spiny-patch-easel。`);
+    // A code that stops after the three words is a v0.3 code, or one that got cut short on the
+    // way over. Both are worth saying out loud, because neither looks like a typo.
+    if (isRoomAddress(code)) {
+      throw new Error(
+        `这个配对码少了最后一段密钥：${code}\n` +
+          `可能是复制的时候被截断了，也可能对方还在用 v0.3。从 v0.4 起配对码有五段，最后一段是 26 位的密钥，` +
+          `没有它读不到对话。请对方先 agenthop update，再把 waiting 那一行整行发过来。`,
+      );
+    }
+    if (!isPairingCode(code)) {
+      throw new Error(
+        `这不像一个配对码：${abbreviate(joined)}\n` +
+          `配对码是四位数字、三个英文词，再加一段 26 位的密钥，例如 1720-spiny-patch-easel-k7f3q2mbxz4a6tu5wnhjy2pc3d。`,
+      );
     }
     return { kind: "join", code };
   }
@@ -95,6 +107,12 @@ export function classifyInput(positionals: string[]): Input {
 
 function looksLikeCode(text: string): boolean {
   return /^\d{4}[-\s_]/.test(text.trim());
+}
+
+/** Echoing a nearly-right code back in full would copy the secret into the agent's transcript. */
+function abbreviate(text: string): string {
+  const parts = normalizeCode(text).split("-");
+  return parts.length <= 4 ? parts.join("-") : `${parts.slice(0, 4).join("-")}-…`;
 }
 
 function usageHint(): string {

@@ -1285,7 +1285,7 @@ export const WORDLIST: readonly string[] = [
   "yeast",
   "yelp",
   "yield",
-  "yo-yo",
+  "yikes",
   "yodel",
   "yoga",
   "yoyo",

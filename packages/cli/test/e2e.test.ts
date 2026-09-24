@@ -72,6 +72,23 @@ describe("room over the relay", () => {
     expect(existsSync(path.join(home, "inbox"))).toBe(false);
   });
 
+  it("fits a sealed line and a full attachment into one relay body", async () => {
+    // Sealing grows the text by a third, and the attachment is base64 on top of that. All of it
+    // has to stay under the relay's 1 MiB body, so the margin is worth pinning down.
+    const dir = await mkdtemp(path.join(tmpdir(), "agenthop-e2e-"));
+    const attached = path.join(dir, "big.bin");
+    await writeFile(attached, Buffer.alloc(512 * 1024, 7));
+    const relay = await startRelay();
+    relays.push(relay);
+    const host = await startHost({ relay: relay.url, home: path.join(dir, "home"), onEvent: () => undefined });
+    hosts.push(host);
+
+    const sealedSize = Math.ceil((4 * (64 * 1024 + 58)) / 3) + 20;
+    const sent = await sendMessage({ code: host.code, text: "x".repeat(sealedSize), files: [attached], relay: relay.url });
+    expect(sent.text).toHaveLength(sealedSize);
+    expect(sent.files.map((file) => file.name)).toEqual(["big.bin"]);
+  });
+
   it("fails clearly when the room is not there", async () => {
     const relay = await startRelay();
     relays.push(relay);

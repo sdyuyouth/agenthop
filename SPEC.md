@@ -2,7 +2,13 @@
 
 This document is the relay tunnel. Agent messages are [A2A](https://a2a-protocol.org/latest/specification/) JSON-RPC. The tunnel does not parse them.
 
-A Durable Object has to be chosen before a WebSocket can speak, so the host connects to `/host/<code>`. The first text frame still repeats the code. If the two disagree, the relay closes the socket with `invalid_code`.
+A Durable Object has to be chosen before a WebSocket can speak, so the host connects to
+`/host/<address>`. The first text frame still repeats the address. If the two disagree, the relay
+closes the socket with `invalid_code`.
+
+A pairing code is an address and a secret: `4821-amber-river-maple-k7f3q2mbxz4a6tu5wnhjy2pc3d`.
+Only the address — the first four segments — appears anywhere in this document. The secret never
+reaches the relay, which is why the relay can route a conversation it cannot read.
 
 ## Control frames
 
@@ -63,14 +69,20 @@ When the response path is `/.well-known/agent-card.json`, the relay rewrites eve
 
 ## Rooms and limits
 
-The room id is the first 10 bytes of SHA-256 over the normalized code, encoded as lowercase base32. Normalization is NFKC, trim, casefold, then split on any run of characters that are not letters or digits.
+The room id is the first 10 bytes of SHA-256 over the normalized room address, encoded as
+lowercase base32. Normalization is NFKC, trim, casefold, then split on any run of characters that
+are not letters or digits. The address is unchanged from before v0.4, so a relay built against an
+earlier version of this document routes v0.4 clients without any change.
 
 One host socket per room. A second host gets `room_taken`, and so does a later host whose
 `token` does not match the one that opened the room — a socket that has gone away does not make
 the room available to whoever asks next.
 
-Anyone who has the code can send HTTP to `/r/<code>/...`. The code is the only credential: this
-version has no end-to-end encryption, so holding it is enough to read the conversation.
+Anyone who has the address can send HTTP to `/r/<address>/...`, and the relay does not tell one
+sender from another. Message bodies are sealed end to end with a key derived from the secret half
+of the pairing code, so what a room carries — including everything its history endpoint hands
+out — is ciphertext the relay cannot read and cannot forge. Deciding whether a line belongs to
+the conversation happens above the relay, in the endpoints that hold the secret.
 
 A room closes after 10 minutes with no frames and no HTTP. The next request is `404`.
 

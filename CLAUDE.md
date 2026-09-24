@@ -57,7 +57,7 @@ tunnel ─┬─ relay-node（自建中继，ws + node:http）
 
 状态机靠**正文里的 wire 前缀**区分，不是靠协议字段：`[[agenthop:connect:<id>]]`、`[[agenthop:hello]] …`、`[[agenthop:confirm:<id>]] …`、`[[agenthop:say:<id>]] …`、`[[agenthop:bye:<id>]]`（`session.ts: parseWire`）。顺序固定为 `connect → hello → confirm → ready → say → bye`。加入方在 `wait-confirm` 之前写的行会被暂存（`early`），确认之后才放行——改这段时别把暂存丢了。
 
-`<id>` 是加入方自己生成的，创建方只认第一个 connect 带来的那个，别人拿着同一个配对码说话会被记成 `peer refused`。**没有 id 的行按旧版本接受**（`id === ""`），别把这个兼容去掉。房间本身不认人：拿到码的人都能 POST，过滤发生在会话层。
+`<id>` 是加入方自己生成的，创建方只认第一个 connect 带来的那个。**这个 id 在密封层里面**——能造出一句合法密文就证明握有配对码里的密钥，所以 `accept` 现在是密码学的，不是约定俗成的。v0.4 之前有一条"没有 id 的行按旧版本接受"的兼容，已经删掉：旧版本的对端根本造不出密文，那条分支谁也保护不了，只是把 `accept` 开了个口子。房间本身仍然不认人：拿到地址的人都能 POST，过滤发生在会话层。
 
 **stdin 的语义**：一行正文就是一句话；`/bye`（`session.ts: BYE`）结束对话；EOF **不等于** bye——只写一行 `local input-closed` 然后继续收听，因为很多 agent harness 启动子进程时 stdin 本来就是关的，EOF 触发退出会让房间刚开就关。
 
@@ -103,6 +103,10 @@ tunnel ─┬─ relay-node（自建中继，ws + node:http）
 - **房间归第一个开它的 host**：`open` 帧带一个随机 `token`，中继只存 `SHA-256`（relay-cf 放 `meta` 表，relay-node 放房间记录里，socket 断了**不要删房间记录**，否则等于把房间让给下一个来的人）。没带 token 的旧 host 照旧放行，别把这个兼容去掉。
 - **中继不留访问者地址**：`RateLimit` 的键是加盐摘要，盐按天轮换，每次 `allow()` 顺手删掉早于当前分钟的行。`RateCounters`（自建中继）同样按窗口清理——那里原本只增不删，既留地址又涨内存。
 - **中继自己也有总量上限**：`MAX_ROOM_BYTES`（64 MiB，两个方向都算）在 `RelaySession` 里，超了抛 `room_quota`，两个中继都映射成 429。CLI 的 8 MiB 配额是 host 自律，拦不住不配合的客户端。
-- 房间 10 分钟没有转发就消失（`IDLE_MS`），配对码就是唯一凭证。TLS 在 Cloudflare 终结，托管中继能读到正文，这一版没有端到端加密——别在文档里暗示有。
+- **加密层在 `HopMessage.text` 之内，中继不参与**（`packages/cli/src/seal.ts`）。这个层是挑出来的：再往下一层，中继就改不了 Agent Card（`card.ts` 要 JSON.parse 那个响应，失败就是硬 502），路由也没法做。所以 seal 挂在 `session.ts` 的 `say`/`send` 两个传输闭包里，八个 wire 构造点一个都不碰；解封在 `accept` 和两个轮询点。**`write()` 拿到的永远是明文**，stdout 的格式契约不变。
+- **配对码分两半，密钥那半绝不进中继**：`addressOf` 在 `host.ts:52` 剥一次，`relayEndpoints` 再剥一次，中继还会拒五段码——三道独立关卡。日志文件名只用地址；`local waiting` 那一行是唯一该出现完整码的地方（它就是交给对方的东西）。**中继只认四段地址，所以 v0.4 之前的中继原样就能服务 v0.4 的客户端**，改中继时这个 diff 应该只有 `isRoomAddress` 这个名字。
+- **`open()` 是纯函数，防重放的 `fresh()` 是另一个对象**。创建方对每条进来的消息解密两次（`accept` 一次、轮询循环一次），把重放检查塞进 `open()` 会让每一条正常消息在第二次查看时被拒。拒绝时**必须写出 `peer refused`**——静默丢话那条规矩在这里同样不能退。
+- **词表里每个词都得是一段纯小写字母**（`tunnel.test.ts` 有不变量测试）。`wordlist.ts` 曾经混进一个 `yo-yo`，抽中就生成五段码，中继直接拒绝，0.23% 的会话一开就废。`generateCode` 现在也校验自己的输出。
+- 房间 10 分钟没有转发就消失（`IDLE_MS`）。TLS 在 Cloudflare 终结，但中继拿到的是密文——**没有前向保密，附件的字节也不加密**，别在文档里暗示有。
 - 附件（`packages/agent`，512 KiB 上限）在协议和 `Room` 里还在，但会话流程没有入口。`SPEC.md` 仍然描述它，不要顺手删。
 - 注释和 commit message 用英文，README / SKILL.md / CLI 帮助文本用中文。

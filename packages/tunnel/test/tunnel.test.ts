@@ -3,31 +3,76 @@ import {
   assertSafePath,
   decodeFrame,
   encodeFrame,
+  addressOf,
   generateCode,
-  isValidCode,
+  isPairingCode,
+  isRoomAddress,
   MAX_CHUNK,
   normalizeCode,
+  relayEndpoints,
   rewriteAgentCard,
   roomIdFromCode,
   RelaySession,
+  secretOf,
+  splitCode,
   TunnelError,
+  WORDLIST,
   encodeControl,
   decodeControl,
 } from "../src/index.js";
 
+const CODE = "4821-amber-river-maple-k7f3q2mbxz4a6tu5wnhjy2pc3d";
+
 describe("codes", () => {
   it("normalizes case and separators", () => {
     expect(normalizeCode("  4821 Amber River Maple ")).toBe("4821-amber-river-maple");
-    expect(isValidCode(normalizeCode("4821-amber-river-maple"))).toBe(true);
+    expect(normalizeCode("  4821 Amber_River Maple K7F3Q2MBXZ4A6TU5WNHJY2PC3D ")).toBe(CODE);
+    expect(isRoomAddress(normalizeCode("4821-amber-river-maple"))).toBe(true);
+    expect(isPairingCode(CODE)).toBe(true);
+    expect(isPairingCode("4821-amber-river-maple")).toBe(false);
+    expect(isRoomAddress(CODE)).toBe(false);
   });
 
-  it("generates a valid code and a stable room id", async () => {
-    const code = generateCode();
-    expect(isValidCode(code)).toBe(true);
-    const first = await roomIdFromCode(code);
-    const second = await roomIdFromCode(code.toUpperCase());
-    expect(first).toBe(second);
-    expect(first).toMatch(/^[a-z2-7]+$/);
+  it("splits a code into the half the relay sees and the half it must not", () => {
+    expect(splitCode(CODE)).toEqual({ address: "4821-amber-river-maple", secret: "k7f3q2mbxz4a6tu5wnhjy2pc3d" });
+    expect(addressOf(CODE)).toBe("4821-amber-river-maple");
+    expect(addressOf("4821-amber-river-maple")).toBe("4821-amber-river-maple");
+    expect(secretOf(CODE)).toHaveLength(26);
+    expect(() => splitCode("4821-amber-river-maple")).toThrow("invalid_code");
+  });
+
+  it("every word in the list is one lowercase run", () => {
+    // A single hyphenated entry once produced five-segment codes the relay refused outright,
+    // and one session in four hundred died before it started.
+    expect(WORDLIST).toHaveLength(1296);
+    for (const word of WORDLIST) expect(word).toMatch(/^[a-z]{2,}$/);
+    expect([...WORDLIST].sort()).toEqual([...WORDLIST]);
+    expect(new Set(WORDLIST).size).toBe(WORDLIST.length);
+  });
+
+  it("only ever generates a code the relay will take", () => {
+    for (let i = 0; i < 2000; i++) {
+      const code = generateCode();
+      expect(isPairingCode(code)).toBe(true);
+      expect(isRoomAddress(addressOf(code))).toBe(true);
+    }
+  });
+
+  it("keeps the secret out of everything that reaches the relay", async () => {
+    const secret = secretOf(CODE);
+    const whole = relayEndpoints("https://relay.example", CODE);
+    expect(whole).toEqual(relayEndpoints("https://relay.example", addressOf(CODE)));
+    expect(whole.publicBase + whole.hostUrl).not.toContain(secret);
+    // The room id is still the address's, so a relay from before this release routes v0.4
+    // clients without knowing anything changed.
+    expect(await roomIdFromCode(addressOf(CODE))).toBe(await roomIdFromCode("4821-AMBER-RIVER-MAPLE"));
+    await expect(roomIdFromCode(CODE)).rejects.toThrow("invalid_code");
+  });
+
+  it("generates a stable room id", async () => {
+    const address = addressOf(generateCode());
+    expect(await roomIdFromCode(address)).toBe(await roomIdFromCode(address.toUpperCase()));
+    expect(await roomIdFromCode(address)).toMatch(/^[a-z2-7]+$/);
     await expect(roomIdFromCode("nope")).rejects.toThrow("invalid_code");
   });
 });

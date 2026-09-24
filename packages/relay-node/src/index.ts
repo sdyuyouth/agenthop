@@ -9,7 +9,7 @@ import {
   TunnelError,
   decodeControl,
   encodeControl,
-  isValidCode,
+  isRoomAddress,
   normalizeCode,
   roomIdFromCode,
   safeEqual,
@@ -67,7 +67,7 @@ export async function startRelay(options: RelayOptions = {}): Promise<RunningRel
         res.end("not found");
         return;
       }
-      if (!isValidCode(route.code)) {
+      if (!isRoomAddress(route.code)) {
         noteMiss(rates, req, now);
         res.writeHead(400);
         res.end("invalid_code");
@@ -127,7 +127,7 @@ export async function startRelay(options: RelayOptions = {}): Promise<RunningRel
     }
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     const code = codeFromHostPath(url.pathname);
-    if (!code || !isValidCode(normalizeCode(code))) {
+    if (!code || !isRoomAddress(normalizeCode(code))) {
       socket.write("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
       socket.destroy();
       return;

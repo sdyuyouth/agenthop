@@ -7,7 +7,7 @@ import {
   TunnelError,
   decodeControl,
   encodeControl,
-  isValidCode,
+  isRoomAddress,
   normalizeCode,
   rateShard,
   roomIdFromCode,
@@ -281,7 +281,7 @@ export default {
     const ip = request.headers.get("cf-connecting-ip") ?? "local";
     if (url.pathname.startsWith("/host/")) {
       const code = normalizeCode(decodeURIComponent(url.pathname.slice("/host/".length)));
-      if (!isValidCode(code)) return new Response("invalid_code", { status: 400 });
+      if (!isRoomAddress(code)) return new Response("invalid_code", { status: 400 });
       const allowed = await limiter(env, ip).allow(ip, "create");
       if (!allowed) return new Response("rate_limited", { status: 429 });
       const roomId = await roomIdFromCode(code);
@@ -296,7 +296,7 @@ export default {
       const rest = url.pathname.slice("/r/".length);
       const slash = rest.indexOf("/");
       const code = normalizeCode(decodeURIComponent(slash === -1 ? rest : rest.slice(0, slash)));
-      if (!isValidCode(code)) {
+      if (!isRoomAddress(code)) {
         const allowed = await limiter(env, ip).allow(ip, "miss");
         return new Response("invalid_code", { status: allowed ? 400 : 429 });
       }
