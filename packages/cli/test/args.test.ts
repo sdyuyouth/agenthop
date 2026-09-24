@@ -32,6 +32,58 @@ describe("arguments", () => {
     expect(() => classifyInput(["1720-spiny-patch-easel-k7f3q2mbxz4a6tu5wnhjy2pc3dd"])).toThrow(/不像一个配对码/);
   });
 
+  describe("a code the way agents actually pass it along", () => {
+    const CODE = "1720-spiny-patch-easel-k7f3q2mbxz4a6tu5wnhjy2pc3d";
+    const joins = { kind: "join", code: CODE };
+
+    it("in backticks, quotes or brackets", () => {
+      // Agents wrap codes in backticks constantly. A backtick in front used to make the whole
+      // thing task text, and the command quietly opened a second room instead of joining.
+      for (const written of [`\`${CODE}\``, `"${CODE}"`, `'${CODE}'`, `「${CODE}」`, `(${CODE})`, `${CODE}.`, `${CODE}。`]) {
+        expect(classifyInput([written]), written).toEqual(joins);
+      }
+    });
+
+    it("as the whole waiting line, with or without its timestamp", () => {
+      expect(classifyInput([`local waiting ${CODE}`])).toEqual(joins);
+      expect(classifyInput(["local", "waiting", CODE])).toEqual(joins);
+      expect(classifyInput([`2026-09-24T10:33:58.235+08:00 local waiting ${CODE}`])).toEqual(joins);
+    });
+
+    it("with the secret broken across a line by the terminal", () => {
+      expect(classifyInput(["1720-spiny-patch-easel-k7f3q2mbxz4a6tu5\nwnhjy2pc3d"])).toEqual(joins);
+      expect(classifyInput(["1720-spiny-patch-easel-k7f3q2mbxz4a6tu5", "wnhjy2pc3d"])).toEqual(joins);
+    });
+
+    it("in full-width characters", () => {
+      expect(classifyInput(["１７２０－ｓｐｉｎｙ－ｐａｔｃｈ－ｅａｓｅｌ－ｋ７ｆ３ｑ２ｍｂｘｚ４ａ６ｔｕ５ｗｎｈｊｙ２ｐｃ３ｄ"])).toEqual(joins);
+    });
+
+    it("followed by a few words of instruction", () => {
+      expect(classifyInput([CODE, "请加入"])).toEqual(joins);
+    });
+
+    it("wrapped and followed by instruction at once", () => {
+      // Found by running the binary, not by these tests: each half was covered, the pair was not.
+      for (const written of [[`\`${CODE}\``, "请加入"], [`「${CODE}」请加入`], [`"${CODE}"，麻烦加入一下`], [`(${CODE}) 这是码`]]) {
+        expect(classifyInput(written), written.join(" ")).toEqual(joins);
+      }
+    });
+  });
+
+  describe("task text that merely starts like a code", () => {
+    it("stays task text when it starts with a year", () => {
+      // These used to be read as mistyped codes and refused outright.
+      expect(classifyInput(["2026 年的季度计划要对一下"])).toEqual({ kind: "create", hello: "2026 年的季度计划要对一下" });
+      expect(classifyInput(["2024-Q3 销售数据对账"])).toEqual({ kind: "create", hello: "2024-Q3 销售数据对账" });
+    });
+
+    it("stays task text when a code only appears in the middle", () => {
+      const hello = "请用 1720-spiny-patch-easel-k7f3q2mbxz4a6tu5wnhjy2pc3d 之外的码";
+      expect(classifyInput([hello])).toEqual({ kind: "create", hello });
+    });
+  });
+
   it("does not echo a nearly-right code back in full", () => {
     // The error goes to standard output, which is the agent's record of the session.
     const secret = "k7f3q2mbxz4a6tu5wnhjy2pc3dd";

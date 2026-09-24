@@ -1,29 +1,23 @@
-import { mkdtemp, readFile, readdir } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { startRelay } from "@agenthop/relay-node";
 import { startHost } from "../src/host.js";
 import { readQueue, roomBase, sendMessage } from "../src/send.js";
 import { addressOf } from "@agenthop/tunnel";
 import { channel } from "../src/seal.js";
-import { lineQueue, runSession, sessionPath } from "../src/session.js";
-
-/**
- * A session that dies early leaves nothing in the log, and waiting for a line it will never
- * write reports a timeout instead of the reason. Keep the reason.
- */
-let failures: unknown[] = [];
+import { lineQueue, sessionPath } from "../src/session.js";
+import { delay, failures, resetFailures, start, waitForText } from "./harness.js";
 
 beforeEach(() => {
-  failures = [];
+  resetFailures();
 });
 
-function start(options: Parameters<typeof runSession>[0]): Promise<void> {
-  return runSession(options).catch((error) => {
-    failures.push(error);
-  });
-}
+// A session that ends by throwing has lost whatever it was holding, whatever the log says after.
+afterEach(() => {
+  expect(failures.map((error) => (error instanceof Error ? error.message : String(error)))).toEqual([]);
+});
 
 describe("session", () => {
   it("opens the channel when the joining agent writes a confirmation", async () => {
@@ -545,29 +539,3 @@ describe("session", () => {
     await relay.close();
   });
 });
-
-async function waitForText(home: string, text: string): Promise<string> {
-  const deadline = Date.now() + 20000;
-  while (Date.now() < deadline) {
-    if (failures.length > 0) throw new Error(`session stopped: ${failures[0] instanceof Error ? failures[0].stack : failures[0]}`);
-    let files: string[] = [];
-    try {
-      files = await readdir(path.join(home, "sessions"));
-    } catch {
-      files = [];
-    }
-    for (const file of files) {
-      const body = await readFile(path.join(home, "sessions", file), "utf8");
-      const line = body.split("\n").find((candidate) => candidate.includes(text));
-      // The whole pairing code, read off the line the creator prints it on. The file is named
-      // after the room address alone, so its name no longer carries the secret.
-      if (line) return body.match(/ local waiting (\S+)/)?.[1] ?? "";
-    }
-    await delay(50);
-  }
-  throw new Error(`${text} did not arrive in ${home}`);
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}

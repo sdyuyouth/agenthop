@@ -25,8 +25,12 @@ export const DEFAULT_LIMITS: RoomLimits = {
 export type RoomOptions = {
   inboxDir: string;
   onEvent?: (event: SessionEvent) => void;
-  /** Decides whether an incoming line belongs to this conversation, before anything is kept. */
-  accept?: (text: string) => boolean;
+  /**
+   * Decides whether an incoming line belongs to this conversation, before anything is kept.
+   * `true` keeps it; `false` turns it away for the usual reason; a string turns it away and is
+   * the reason — the sender reads it, so it had better be the true one.
+   */
+  accept?: (text: string) => boolean | string;
   /** Why something was turned away. The session writes it down. */
   onRefused?: (reason: string, text: string) => void;
   /** Write incoming attachments to the inbox. Off unless the person asked for it. */
@@ -88,9 +92,9 @@ export class Room {
 
   /** Reasons an incoming line is not part of this conversation, checked before anything is kept. */
   private refuse(message: HopMessage): string | undefined {
-    if (this.options.accept && !this.options.accept(message.text)) {
-      return "有人用这个房间地址说话，但拿不出配对码里的密钥，已经忽略";
-    }
+    const verdict = this.options.accept?.(message.text) ?? true;
+    if (typeof verdict === "string") return verdict;
+    if (!verdict) return "这一句不属于这场对话，已经忽略";
     const size = Buffer.byteLength(message.text) + message.files.reduce((sum, file) => sum + file.bytes.byteLength, 0);
     if (Buffer.byteLength(message.text) > this.limits.textBytes) {
       return `一条消息的正文超过 ${Math.round(this.limits.textBytes / 1024)} KiB，已经拒绝`;

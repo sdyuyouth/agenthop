@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
 import { generateCode, splitCode } from "@agenthop/tunnel";
-import { readQueue, roomBase, sendMessage } from "./send.js";
+import { readQueue, roomBase, sendMessage, Throttled } from "./send.js";
 import { RECOVER_MS, startHost, type RunningHost } from "./host.js";
 import { channel, type Channel } from "./seal.js";
 import { type SessionEvent } from "./talk.js";
@@ -18,12 +18,22 @@ export const BYE = "/bye";
  */
 export const WORKING = "/working";
 
+/** What one line may carry, as the person writes it. The room measures ciphertext, which is larger. */
+export const MAX_LINE_BYTES = 64 * 1024;
+
+// Why a line was turned away. The sender reads these, so each says what actually happened.
+const REFUSE_NO_KEY = "有人用这个房间地址说话，但拿不出配对码里的密钥，已经忽略";
+const REFUSE_SEAT_TAKEN = "已经有人用这个配对码加入了，一个房间只接一个对端";
+const REFUSE_NOT_PEER = "这一句拿着完整的配对码，却不是已经加入的那一方发的，已经忽略";
+
 const LOCAL_POLL_MS = 200;
 const RELAY_POLL_MS = 1000;
 /** After answering a goodbye the room stays open this long, so the other side can still read it. */
 const LINGER_MS = 2000;
 /** How long the side that said goodbye first waits for the other one to say it back. */
 const BYE_WAIT_MS = 10_000;
+/** How often to try again once the relay has said this room is sending too fast. Refused tries are not counted against it. */
+const THROTTLE_RETRY_MS = 5_000;
 
 export type LineSource = { take(): string[]; ended(): boolean };
 
@@ -73,6 +83,7 @@ export async function runSession(options: SessionOptions): Promise<void> {
 async function createSession(options: SessionOptions, home: string): Promise<void> {
   const hello = options.hello?.trim() ?? "";
   if (!hello) throw new Error("usage: agenthop <任务背景>");
+  if (tooLong(hello)) throw new Error("任务背景超过 64 KiB。写一段简短的背景，细节留到对话里再说。");
   let lost = "";
   let peerId: string | undefined;
   // The code is made here rather than in the host, because only this side may hold both halves
@@ -95,14 +106,16 @@ async function createSession(options: SessionOptions, home: string): Promise<voi
       try {
         wire = parseWire(box.open(text).wire);
       } catch {
-        return false;
+        return REFUSE_NO_KEY;
       }
       if (peerId === undefined) {
         if (wire.kind === "connect") peerId = wire.id;
         return true;
       }
-      if (wire.kind === "connect") return false;
-      return wire.id === peerId;
+      // Both of these hold the secret, so neither is a stranger — and telling them they are
+      // would send someone looking for a typo in a code that is right.
+      if (wire.kind === "connect") return REFUSE_SEAT_TAKEN;
+      return wire.id === peerId ? true : REFUSE_NOT_PEER;
     },
     onRefused: (reason, text) => {
       const shown = readable(box, text);
@@ -149,8 +162,7 @@ async function createSession(options: SessionOptions, home: string): Promise<voi
           write(log, "peer", "bye", wire.text);
           out.reportUnsent();
           if (saidBye) return;
-          await say(byeWire());
-          write(log, "local", "bye");
+          if (!(await answerBye(() => say(byeWire()), log))) return;
           // The other side reads the room over the relay, so keep it open long enough to be read.
           await delay(LINGER_MS);
           return;
@@ -174,6 +186,7 @@ async function createSession(options: SessionOptions, home: string): Promise<voi
       }
       if (!saidBye && phase === "ready" && (await out.flush(say))) saidBye = Date.now();
       if (saidBye && Date.now() - saidBye > (options.byeWaitMs ?? BYE_WAIT_MS)) {
+        out.reportUnsent();
         write(log, "peer", "gone", "对方没有把告别说回来");
         return;
       }
@@ -207,8 +220,14 @@ async function joinSession(options: SessionOptions, home: string): Promise<void>
   let saidBye = 0;
   let phase: "wait-hello" | "wait-confirm" | "ready" = "wait-hello";
   const early: string[] = [];
+  // Everything that never went — including lines held back because the hello had not arrived.
+  const reportUnsent = (): void => {
+    for (const text of early.splice(0)) write(log, "local", "undelivered", unsent(text));
+    out.reportUnsent();
+  };
   for (;;) {
     if (options.signal?.aborted) {
+      reportUnsent();
       await farewell(send, out, log, phase === "ready" && !saidBye, 0, id);
       return;
     }
@@ -223,7 +242,7 @@ async function joinSession(options: SessionOptions, home: string): Promise<void>
         write(log, "local", "reconnecting", "读不到房间了，正在重试");
       }
       if (Date.now() - failingSince > (options.recoverMs ?? RECOVER_MS)) {
-        out.reportUnsent();
+        reportUnsent();
         write(log, "peer", "gone", "房间已经不在了，对方可能已经退出，或者房间空闲超过十分钟");
         return;
       }
@@ -237,10 +256,9 @@ async function joinSession(options: SessionOptions, home: string): Promise<void>
       if (!wire) continue;
       if (wire.kind === "bye") {
         write(log, "peer", "bye", wire.text);
-        out.reportUnsent();
+        reportUnsent();
         if (saidBye) return;
-        await send(byeWire(id));
-        write(log, "local", "bye");
+        await answerBye(() => send(byeWire(id)), log);
         return;
       }
       if (phase === "wait-hello" && wire.kind === "hello") {
@@ -257,28 +275,41 @@ async function joinSession(options: SessionOptions, home: string): Promise<void>
     const typed = options.lines!.take();
     if (phase === "wait-hello") early.push(...typed);
     else if (phase === "wait-confirm") typed.unshift(...early.splice(0));
-    // A receipt written before the channel is open is still a receipt, not the confirmation the
-    // creator is waiting for. Send it and keep looking for the line that opens the channel.
-    while (phase === "wait-confirm" && isWorking(typed[0] ?? "")) {
-      const noted = isWorking(typed.shift() ?? "")!;
-      await send(workingWire(id, noted.text));
-      write(log, "local", "working", noted.text);
-    }
-    if (phase === "wait-confirm" && typed.length > 0) {
-      const reply = typed.shift() ?? "";
-      if (reply === BYE) {
-        await send(byeWire(id));
-        write(log, "local", "bye");
+    // The first ordinary line is the confirmation. A receipt written before it is still a
+    // receipt, and a line too long to send is set aside, so neither is spent as the confirmation.
+    while (phase === "wait-confirm" && !saidBye && typed.length > 0) {
+      const next = typed.shift() ?? "";
+      const bye = isBye(next);
+      const working = bye ? undefined : isWorking(next);
+      const body = bye?.text ?? working?.text ?? next;
+      if (tooLong(body)) {
+        write(log, "local", "undelivered", oversized(body));
+        continue;
+      }
+      try {
+        if (working) await send(workingWire(id, working.text));
+        else if (bye) await send(byeWire(id, bye.text));
+        else await send(confirmWire(id, next));
+      } catch {
+        // Nothing after an unsent confirmation can go either: it would arrive as the confirmation.
+        for (const missed of [next, ...typed.splice(0)]) write(log, "local", "undelivered", unsent(missed));
+        break;
+      }
+      if (working) {
+        write(log, "local", "working", working.text);
+      } else if (bye) {
+        write(log, "local", "bye", bye.text);
         saidBye = Date.now();
+        for (const after of typed.splice(0)) write(log, "local", "undelivered", unsent(after));
       } else {
-        await send(confirmWire(id, reply));
-        write(log, "local", "confirm", reply);
+        write(log, "local", "confirm", next);
         write(log, "local", "ready");
         phase = "ready";
       }
     }
     if (!saidBye && phase === "ready" && (await out.flush((wire) => send(wire), typed, id))) saidBye = Date.now();
     if (saidBye && Date.now() - saidBye > (options.byeWaitMs ?? BYE_WAIT_MS)) {
+      reportUnsent();
       write(log, "peer", "gone", "对方没有把告别说回来");
       return;
     }
@@ -297,25 +328,58 @@ type Outbox = {
  */
 function outbox(lines: LineSource, logFile: string): Outbox {
   let noted = false;
+  // Lines the relay was not ready to take yet, in the order they were written. They go first
+  // next time, ahead of anything newer, so a pause never reorders the conversation.
+  let backlog: string[] = [];
+  let holdUntil = 0;
+  let throttleNoted = false;
   return {
     async flush(send, queued, id) {
-      const texts = [...(queued ?? []), ...lines.take()];
+      const texts = [...backlog, ...(queued ?? []), ...lines.take()];
+      backlog = [];
+      if (Date.now() < holdUntil) {
+        backlog = texts;
+        return false;
+      }
       for (let i = 0; i < texts.length; i++) {
         const text = texts[i] ?? "";
-        const bye = text === BYE;
-        const working = !bye && isWorking(text);
+        const bye = isBye(text);
+        const working = bye ? undefined : isWorking(text);
+        const body = bye?.text ?? working?.text ?? text;
+        // Stopped here rather than at the other end, where it would be refused after the fact
+        // and this side would have no way to know how long was too long.
+        if (tooLong(body)) {
+          write(logFile, "local", "undelivered", oversized(body));
+          continue;
+        }
         try {
-          if (bye) await send(byeWire(id));
+          if (bye) await send(byeWire(id, bye.text));
           else if (working) await send(workingWire(id, working.text));
           else await send(sayWire(id, text));
-        } catch {
-          for (const missed of texts.slice(i)) write(logFile, "local", "undelivered", missed);
+        } catch (error) {
+          // The one failure whose remedy is known. Handing it back as undelivered would leave the
+          // agent to guess when to try again, and whatever it resent would land behind newer lines.
+          if (error instanceof Throttled) {
+            backlog = texts.slice(i);
+            holdUntil = Date.now() + THROTTLE_RETRY_MS;
+            if (!throttleNoted) {
+              throttleNoted = true;
+              write(logFile, "local", "throttled", `中继这一分钟不再收这个房间的消息了，还有 ${backlog.length} 句在排队，稍后按原来的顺序自动发出`);
+            }
+            return false;
+          }
+          for (const missed of texts.slice(i)) write(logFile, "local", "undelivered", unsent(missed));
           return false;
         }
-        if (bye) write(logFile, "local", "bye");
-        else if (working) write(logFile, "local", "working", working.text);
+        throttleNoted = false;
+        if (bye) {
+          write(logFile, "local", "bye", bye.text);
+          // Whatever came after the goodbye in the same breath never goes; say so.
+          for (const after of texts.slice(i + 1)) write(logFile, "local", "undelivered", unsent(after));
+          return true;
+        }
+        if (working) write(logFile, "local", "working", working.text);
         else write(logFile, "local", "say", text);
-        if (bye) return true;
       }
       if (lines.ended() && !noted) {
         noted = true;
@@ -324,9 +388,25 @@ function outbox(lines: LineSource, logFile: string): Outbox {
       return false;
     },
     reportUnsent() {
-      for (const text of lines.take()) write(logFile, "local", "undelivered", text);
+      for (const text of [...backlog.splice(0), ...lines.take()]) write(logFile, "local", "undelivered", unsent(text));
     },
   };
+}
+
+/**
+ * Say goodbye back to a side that is already leaving. If it cannot go — the relay is throttling
+ * this room, or the connection is gone — the other side will write that none came back; this
+ * side writes that it did not go, instead of leaving by throwing.
+ */
+async function answerBye(send: () => Promise<unknown>, logFile: string): Promise<boolean> {
+  try {
+    await send();
+  } catch {
+    write(logFile, "local", "undelivered", BYE);
+    return false;
+  }
+  write(logFile, "local", "bye");
+  return true;
 }
 
 /** Ctrl-C still owes the other side a goodbye. */
@@ -421,6 +501,13 @@ async function pollLocal(host: RunningHost, after: number): Promise<SessionEvent
 
 function joinFailure(error: unknown): string {
   const detail = error instanceof Error ? error.message : String(error);
+  // The room answered and said no. Say what it said, rather than guess at a typo.
+  if (detail.includes(REFUSE_SEAT_TAKEN)) {
+    return `加入房间失败：${REFUSE_SEAT_TAKEN}。配对码本身没有问题。如果是你之前加入过又退出了，请对方重新执行 agenthop "<任务背景>" 开一个新房间。`;
+  }
+  if (detail.includes(REFUSE_NO_KEY)) {
+    return "加入房间失败：配对码最后一段的密钥对不上，多半是复制的时候漏了或多了字符。请对方把 waiting 那一行整行重新发一遍。";
+  }
   return `加入房间失败。配对码可能打错了，或者房间已经过期（十分钟没有对话就会消失）。请对方重新执行 agenthop "<任务背景>" 拿一个新配对码。\n${detail}`;
 }
 
@@ -436,10 +523,23 @@ export function sessionPath(home: string, code: string, seat: Seat): string {
 
 export function write(file: string, side: "local" | "peer", state: string, text = ""): string {
   mkdirSync(path.dirname(file), { recursive: true });
-  const line = `${stamp()} ${side} ${state}${text ? ` ${text}` : ""}`;
+  const flat = oneLine(text);
+  const line = `${stamp()} ${side} ${state}${flat ? ` ${flat}` : ""}`;
   appendFileSync(file, `${line}\n`);
   writeSync(1, `${line}\n`);
   return line;
+}
+
+/**
+ * One event is one line, and nothing the other side sends may start another. A line break in a
+ * `say` would let the peer write a line that reads as this side's own; a terminal control
+ * sequence would let it rewrite what the person watching sees. Breaks become a visible ↵.
+ */
+export function oneLine(text: string): string {
+  return text
+    .replace(/\r\n|[\n\r\u0085\u2028\u2029]/g, "↵")
+    .replace(/\t/g, " ")
+    .replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, "");
 }
 
 /** Local time with its offset. A log is read by the person sitting in front of it. */
@@ -459,11 +559,34 @@ export type Wire = {
   text: string;
 };
 
-/** `/working` on its own, or with the rest of the line as what is being worked on. */
-function isWorking(text: string): { text: string } | undefined {
-  if (text === WORKING) return { text: "" };
-  if (text.startsWith(`${WORKING} `)) return { text: text.slice(WORKING.length + 1).trim() };
+/** `/name` on its own, or with the rest of the line as its text. */
+function command(text: string, name: string): { text: string } | undefined {
+  if (text === name) return { text: "" };
+  if (text.startsWith(`${name} `)) return { text: text.slice(name.length + 1).trim() };
   return undefined;
+}
+
+function isWorking(text: string): { text: string } | undefined {
+  return command(text, WORKING);
+}
+
+/** `/bye` may carry a parting word. Sent as an ordinary line, it would leave the conversation running. */
+function isBye(text: string): { text: string } | undefined {
+  return command(text, BYE);
+}
+
+function tooLong(text: string): boolean {
+  return Buffer.byteLength(text) > MAX_LINE_BYTES;
+}
+
+/** An oversized line is described, not copied whole into the log. */
+function oversized(text: string): string {
+  return `${brief(text)}（${Math.ceil(Buffer.byteLength(text) / 1024)} KiB，超过单条 64 KiB 的上限，没有发出。拆成几句再发）`;
+}
+
+/** A line that never went, as it is written down: in full, unless it is too long to be useful. */
+function unsent(text: string): string {
+  return tooLong(text) ? oversized(text) : text;
 }
 
 /**
@@ -508,8 +631,8 @@ function workingWire(id: string | undefined, text: string): string {
   return wire("working", id, text);
 }
 
-function byeWire(id?: string): string {
-  return wire("bye", id, "");
+function byeWire(id?: string, text = ""): string {
+  return wire("bye", id, text);
 }
 
 function stdinLines(): LineSource {

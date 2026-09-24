@@ -83,8 +83,9 @@ export function classifyInput(positionals: string[]): Input {
   if (RETIRED_COMMANDS.has(first)) throw new Error(`agenthop ${first} 已经没有了。\n${usageHint()}`);
   if (positionals.length === 0) return { kind: "help" };
   const joined = positionals.join(" ");
-  if (looksLikeCode(joined)) {
-    const code = normalizeCode(joined);
+  const attempt = codeAttempt(joined);
+  if (attempt !== undefined) {
+    const code = rejoinSecret(normalizeCode(attempt));
     // A code that stops after the three words is a v0.3 code, or one that got cut short on the
     // way over. Both are worth saying out loud, because neither looks like a typo.
     if (isRoomAddress(code)) {
@@ -105,8 +106,55 @@ export function classifyInput(positionals: string[]): Input {
   return { kind: "create", hello: joined };
 }
 
-function looksLikeCode(text: string): boolean {
-  return /^\d{4}[-\s_]/.test(text.trim());
+/**
+ * The part of the input that is an attempt at a pairing code, or undefined for task text.
+ *
+ * Codes arrive the way agents pass them along: in backticks, in quotes, as the whole
+ * `local waiting` line, in full-width characters, with a word of instruction after them.
+ * Missing one of those does not fail loudly — it opens a second room with the code as its
+ * background, and the agent waits for someone who is never coming. So the net is wide on what
+ * surrounds a code and narrow on what counts as one: text that starts with a year and goes on
+ * in Chinese is a background, not a mistyped code.
+ */
+function codeAttempt(input: string): string | undefined {
+  const text = unwrap(input.normalize("NFKC"));
+  const waiting = text.match(/(?:^|\s)local\s+waiting\s+(\S+)/);
+  if (waiting) return unwrap(waiting[1] ?? "");
+  if (!/^[0-9]{4}[-\s_]/.test(text)) return undefined;
+  // Nothing but the characters a code is made of: an attempt, held to the code's rules, so a
+  // near-miss is an error rather than a room.
+  if (/^[A-Za-z0-9\s_-]+$/.test(text)) return text;
+  // A code with something after it — "…-k7f3… 请加入", or "`…-k7f3…` 请加入" where the closing
+  // backtick sits between the two. Three more segments is what separates that from a background
+  // that happens to open with "2024-Q3".
+  return text.match(CODE_THEN_MORE)?.[0];
+}
+
+const WRAPPERS = "`'\"“”‘’「」『』《》〈〉()（）[]【】{}<>";
+const TRAILING = ".,;:!?。，；：！？、";
+const CODE_THEN_MORE = new RegExp(
+  `^[0-9]{4}(?:[-\\s_]+[A-Za-z0-9]+){3,}(?=[\\s${[...WRAPPERS, ...TRAILING].map((c) => `\\${c}`).join("")}]|$)`,
+);
+
+function unwrap(text: string): string {
+  let out = text.trim();
+  for (;;) {
+    const before = out;
+    while (out && WRAPPERS.includes(out[0]!)) out = out.slice(1).trimStart();
+    while (out && (WRAPPERS.includes(out.at(-1)!) || TRAILING.includes(out.at(-1)!))) out = out.slice(0, -1).trimEnd();
+    if (out === before) return out;
+  }
+}
+
+/**
+ * A secret the terminal broke across two lines arrives as two segments. If the four address
+ * segments are followed by pieces that together make exactly one secret, put them back.
+ */
+function rejoinSecret(code: string): string {
+  const parts = code.split("-");
+  if (parts.length <= 5) return code;
+  const candidate = `${parts.slice(0, 4).join("-")}-${parts.slice(4).join("")}`;
+  return isPairingCode(candidate) ? candidate : code;
 }
 
 /** Echoing a nearly-right code back in full would copy the secret into the agent's transcript. */

@@ -27,7 +27,7 @@ export type HostOptions = {
   home?: string;
   onEvent?: (event: SessionEvent) => void;
   /** Decides whether an incoming line belongs to this conversation, before anything is kept. */
-  accept?: (text: string) => boolean;
+  accept?: (text: string) => boolean | string;
   onRefused?: (reason: string, text: string) => void;
   /** Write incoming attachments to the inbox. Off unless the person asked for it. */
   keepFiles?: boolean;

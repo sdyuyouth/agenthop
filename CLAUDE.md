@@ -27,7 +27,7 @@ pnpm --filter @agenthop/relay-cf exec wrangler deploy                  # 部署�
 
 `@agenthop/relay-cf` 的 `test` 会跑两套配置：`vitest.config.ts`（workers pool，快）和 `vitest.live.config.ts`（真的 `wrangler dev`，30s 超时）。只想要快的那套时直接 `vitest run --config vitest.config.ts`。live 那套在 CI 上默认跳过（要跑设 `AGENTHOP_LIVE=1`），因为它要现拉 workerd。
 
-`session.test.ts` 里的会话用 `start()` 起，它把提前失败的原因记进 `failures`，`waitForText` 会把原因抛出来——不这样的话一个早退的会话只会表现成"某一行没等到"。`relay.test.ts` 的 `step()` 同理，给每个 await 一个标签。**这两处不要去掉**：长期被当成"机器慢"的那个偶发，正是靠它们才暴露出真实原因（relay-node 在 accept 之后才挂监听器的竞态，见下）。
+会话测试的工具在 `test/harness.ts`：`start()` 把提前失败的原因记进 `failures`，`waitForText` 会把原因抛出来——不这样的话一个早退的会话只会表现成"某一行没等到"；`pair()` 把两端带到 `ready`。`session.test.ts` 和 `edges.test.ts` 都在 `afterEach` 里断言 `failures` 为空：**一个以抛异常结束的会话，不管日志后面写了什么，手里的东西已经丢了**。这条守卫第一次加上就抓到了自动回 bye 被限流时直接抛出的 bug——那个用例在没有守卫时是"通过"的。`relay.test.ts` 的 `step()` 同理，给每个 await 一个标签。**这两处不要去掉**：长期被当成"机器慢"的那个偶发，正是靠它们才暴露出真实原因（relay-node 在 accept 之后才挂监听器的竞态，见下）。
 
 ## 包与依赖方向
 
@@ -45,6 +45,8 @@ tunnel ─┬─ relay-node（自建中继，ws + node:http）
 
 面向用户的命令只有 `agenthop <任务背景>`（创建）和 `agenthop <配对码>`（加入），加上 install / update / relay / help / --version。`bin.ts` 只做分发，参数解析和输入分类在 `args.ts`（可单测，`bin.ts` 一导入就会执行，不要在测试里 import 它）。
 
+**分类出错不会报错，而是开错房间**——把配对码当成任务背景，就是新开一个房间、把码当 hello 发出去，agent 还以为自己加入了。所以 `codeAttempt` 对码的**外包装**放得宽（反引号、引号、括号、句末标点、整行 `local waiting …`、带时间戳的日志行、全角、被终端折成两段的密钥、码后面跟一句中文指令），对**什么算码**收得紧：全是码字符的输入按码严格校验，打错就报错；以年份开头、接着是中文的是任务背景。改这里先跑 `args.test.ts`。
+
 创建方（`session.ts: createSession`）：
 
 1. `startHost()` 生成配对码，起两个本地 HTTP server：一个跑 A2A（express + `@a2a-js/sdk`），一个是只有本机能访问的 control server（`room.ts: listenControl`，`GET /queue`、`POST /message`）。
@@ -57,13 +59,17 @@ tunnel ─┬─ relay-node（自建中继，ws + node:http）
 
 状态机靠**正文里的 wire 前缀**区分，不是靠协议字段：`[[agenthop:connect:<id>]]`、`[[agenthop:hello]] …`、`[[agenthop:confirm:<id>]] …`、`[[agenthop:say:<id>]] …`、`[[agenthop:working:<id>]] …`、`[[agenthop:bye:<id>]]`，全部再封进 `[[agenthop:sealed]] <密文>`（`session.ts: parseWire`）。顺序固定为 `connect → hello → confirm → ready → say → bye`；`working` 是一张收条，ready 之后随时可以出现，加入方确认之前写的也会照样发出去而不被当成确认语。认不出来的形式记成 `peer other`，别让它抛。加入方在 `wait-confirm` 之前写的行会被暂存（`early`），确认之后才放行——改这段时别把暂存丢了。
 
-`<id>` 是加入方自己生成的，创建方只认第一个 connect 带来的那个。**这个 id 在密封层里面**——能造出一句合法密文就证明握有配对码里的密钥，所以 `accept` 现在是密码学的，不是约定俗成的。v0.4 之前有一条"没有 id 的行按旧版本接受"的兼容，已经删掉：旧版本的对端根本造不出密文，那条分支谁也保护不了，只是把 `accept` 开了个口子。房间本身仍然不认人：拿到地址的人都能 POST，过滤发生在会话层。
+`<id>` 是加入方自己生成的，创建方只认第一个 connect 带来的那个。`accept` 返回拒绝**理由**而不只是布尔值（`REFUSE_NO_KEY` / `REFUSE_SEAT_TAKEN` / `REFUSE_NOT_PEER`），这串文字会原样回到发送方——第二个加入者拿着正确的码，被告知"配对码可能打错了"只会让人去找一个不存在的错字。**这个 id 在密封层里面**——能造出一句合法密文就证明握有配对码里的密钥，所以 `accept` 现在是密码学的，不是约定俗成的。v0.4 之前有一条"没有 id 的行按旧版本接受"的兼容，已经删掉：旧版本的对端根本造不出密文，那条分支谁也保护不了，只是把 `accept` 开了个口子。房间本身仍然不认人：拿到地址的人都能 POST，过滤发生在会话层。
 
 **stdin 的语义**：一行正文就是一句话；`/bye`（`session.ts: BYE`）结束对话；`/working <在做什么>`（`session.ts: WORKING`）发一张收条。收条走自己的状态词，是因为 agent 判断“轮到我了”靠的就是 `peer say`，收条要是也走 `say`，每收一句就要多烧对方一轮去读一句“收到”。**收条必须由 agent 写**：进程只知道自己把行打了出来，不知道模型有没有看，自动发等于谎报已读。EOF **不等于** bye——只写一行 `local input-closed` 然后继续收听，因为很多 agent harness 启动子进程时 stdin 本来就是关的，EOF 触发退出会让房间刚开就关。
 
 **告别是双向的**：收到 `[[agenthop:bye]]` 的一方自动把 bye 回过去再退出，先说的一方等这个回复，等不到就写 `peer gone`。`saidBye` 挡住无限对回。创建方作为回话方时要 linger 两秒再关房间，因为对方是隔着中继轮询读的。
 
-**送不出去的话要留痕**：`outbox.flush` 把发送失败的行写成 `local undelivered <正文>`，终止前 `reportUnsent()` 把还没送出的行也倒出来。静默丢话会让 agent 以为自己回复过——这是最不能退的一条。
+**送不出去的话要留痕**：`outbox.flush` 把发送失败的行写成 `local undelivered <正文>`，终止前 `reportUnsent()` 把还没送出的行也倒出来。静默丢话会让 agent 以为自己回复过——这是最不能退的一条。以下每一条都是按这个标准补上的洞，改这段时逐条对：`/bye` 后面同一口气写的行、等对方回 bye 时写的行、加入方在 hello 之前抢先写的行（`early`）、限流时排着的行（`backlog`），离场时都要写成 `undelivered`；自动回 bye 发不出去写 `local undelivered /bye`，不许抛。
+
+**限流不是失败**：中继每分钟对一个房间只收 60 条 POST（`PostCounter`，被拒的不计数），超出时 `sendMessage` 抛 `Throttled`，outbox 把剩下的行按原顺序留在 `backlog` 里，每 5 秒重试，只写一行 `local throttled`。只认 `rate_limited`——`room_quota` 也是 429，但那是永久的，重试会永远挂着。让 agent 自己重发，它不知道要等多久，重发的句子还会排到新句子后面。
+
+**一个事件就是一行**：`write()` 经过 `oneLine()`，换行（含 `\r`、`U+2028/2029`、`U+0085`）变成可见的 `↵`，控制字符和双向覆盖字符去掉。对方拿着密钥也不能在你的日志里写一行看起来是 `local say` 的东西——没有这一步，一个带换行的 `say` 就能做到。
 
 日志与 stdout 同一份内容：`<时间> <local|peer> <状态> <正文>`，时间是**本机时间带偏移**（`session.ts: stamp`，不是 UTC，日志是给人读的），写到 `<家目录>/.agenthop/sessions/<配对码>.<create|join>.log`（`session.ts: sessionPath`）。**日志的键是（房间, 哪一端）而不是房间**——同机跑两个 agent 时两端共用家目录，只按配对码命名会让两份记录交织进同一个文件（v0.3.2 实测过）。第一行 `local log <绝对路径>` 把路径直接打出来，agent 不用自己拼，改名字也不会让文档失真。**stdout 的格式就是 agent 的接口**，改格式等于改 SKILL.md 的契约。`local` 恒指自己，`peer` 恒指对方——不要再让一个状态词在两边表示不同的事。
 

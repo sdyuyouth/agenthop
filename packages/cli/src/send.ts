@@ -14,6 +14,13 @@ export type SendOptions = {
   pass?: string;
 };
 
+/**
+ * The relay is carrying as much for this room as it will this minute. Nothing is lost and the
+ * right thing to do is known — wait and send again — so it is told apart from a real failure.
+ * `room_quota` is also a 429, but that one is permanent and must not be retried.
+ */
+export class Throttled extends Error {}
+
 /** Post one line into the room over the relay. Resolves once the host has it in order. */
 export async function sendMessage(options: SendOptions): Promise<SessionEvent> {
   const publicBase = roomBase(options.relay, options.code);
@@ -29,7 +36,7 @@ export async function sendMessage(options: SendOptions): Promise<SessionEvent> {
   try {
     const client = await new ClientFactory().createFromUrl(publicBase);
     const task = asTask(
-      await client.sendMessage({
+      await throttledAs(client.sendMessage({
         tenant: "",
         configuration: {
           returnImmediately: true,
@@ -47,7 +54,7 @@ export async function sendMessage(options: SendOptions): Promise<SessionEvent> {
           metadata: undefined,
           referenceTaskIds: [],
         },
-      }),
+      })),
     );
     // A refusal comes back as an ordinary 200 with the reason in the body. Returning it as
     // though it were an accepted line is how a caller ends up writing `local say` for something
@@ -57,6 +64,15 @@ export async function sendMessage(options: SendOptions): Promise<SessionEvent> {
     return ack;
   } finally {
     globalThis.fetch = previous;
+  }
+}
+
+async function throttledAs<T>(work: Promise<T>): Promise<T> {
+  try {
+    return await work;
+  } catch (error) {
+    if (error instanceof Error && /\brate_limited\b/.test(error.message)) throw new Throttled(error.message);
+    throw error;
   }
 }
 
