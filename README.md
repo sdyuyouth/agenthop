@@ -2,9 +2,16 @@
 
 **让两台没有公网地址的机器上的两个 agent 直接对话。** 一个短短的配对码，一条命令，完成配对、确认背景和后续往返。
 
+**简体中文** | [English](README.en.md)
+
 [![CI](https://github.com/sdyuyouth/agenthop/actions/workflows/ci.yml/badge.svg)](https://github.com/sdyuyouth/agenthop/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/sdyuyouth/agenthop)](https://github.com/sdyuyouth/agenthop/releases/latest)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![Downloads](https://img.shields.io/github/downloads/sdyuyouth/agenthop/total)](https://github.com/sdyuyouth/agenthop/releases)
+[![License](https://img.shields.io/github/license/sdyuyouth/agenthop)](LICENSE)
+[![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)](#安装)
+[![End-to-end encrypted](https://img.shields.io/badge/end--to--end-encrypted-brightgreen)](SECURITY.md)
+[![A2A](https://img.shields.io/badge/protocol-A2A-8A2BE2)](https://a2a-protocol.org/latest/specification/)
+[![Stars](https://img.shields.io/github/stars/sdyuyouth/agenthop)](https://github.com/sdyuyouth/agenthop/stargazers)
 
 ## 解决什么问题
 
@@ -96,7 +103,13 @@ agenthop <配对码>
 
 加入方读到 `peer hello` 后，由那边的 agent 判断这段背景是否和自己的上下文相符：相符就写一句确认，创建方随后输出 `ready`；不相符就去问用户，不要往标准输入写东西。`ready` 之后，对方的每一句都是 `peer say`。
 
-写一行 `/bye` 结束对话。对方会把 bye 说回来，两边各有 `local bye` 和 `peer bye`，然后各自退出。读到 `peer bye` 不用管，程序自己会回。按 Ctrl-C 也会先送出 bye 再退出。
+读到一句之后，先写一张收条 `/working <在做什么>`，再开始干活。对方看到的是 `peer working` 而不是 `peer say`，所以收条不占对方的一轮。轮到你接话的只有 `peer hello`、`peer confirm`、`peer say`、`peer bye` 四行；只想在这四行出现时醒来，就过滤日志：
+
+```bash
+tail -n 0 -f <日志路径> | grep -m1 -E ' peer (say|bye|hello|confirm)( |$)'
+```
+
+写一行 `/bye` 结束对话，后面可以带一句告别的话，比如 `/bye 谢谢，今天就到这里`。对方会把 bye 说回来，两边各有 `local bye` 和 `peer bye`，然后各自退出。读到 `peer bye` 不用管，程序自己会回。按 Ctrl-C 也会先送出 bye 再退出。
 
 这个进程写出的每一行就是对话本身，**要出现在用户看得到的地方**。另存一份可以，但要同时告诉用户文件的绝对路径和查看命令。判断标准只有一个：用户此刻能不能看到对话在往前走。
 
@@ -108,7 +121,7 @@ agenthop <配对码>
 <时间> <local|peer> <状态> <正文>
 ```
 
-时间是本机时间，带时区偏移。`local` 恒指自己，`peer` 恒指对方。
+时间是本机时间，带时区偏移。`local` 恒指自己，`peer` 恒指对方。一个事件恒为一行：消息里的换行显示成 `↵`。
 
 | 状态 | 意思 |
 |---|---|
@@ -201,7 +214,3 @@ pnpm test
 ## 许可证
 
 [Apache-2.0](LICENSE)
-
----
-
-**In English:** agenthop lets two agents on machines without public addresses talk to each other. One side runs `agenthop "<background>"` and gets a short pairing code; the other runs `agenthop <code>`. A relay forwards bytes between them — the messages themselves are [A2A](https://a2a-protocol.org/latest/specification/) JSON-RPC and the relay does not parse them. The tunnel format, room lifetime and rate limits are specified in [SPEC.md](SPEC.md), which is in English. Message bodies are encrypted end to end: the pairing code is an address the relay routes on plus a secret that never leaves the two machines, so the relay forwards ciphertext it cannot read. It still sees the room address, message sizes and timing. There is no forward secrecy.

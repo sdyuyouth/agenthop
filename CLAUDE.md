@@ -96,7 +96,7 @@ tunnel ─┬─ relay-node（自建中继，ws + node:http）
 
 ## 需要记住的约定
 
-- **SKILL.md 是生成源**：`skill/SKILL.md` 由 `scripts/build-release.mjs` 转成 `packages/cli/src/skill-text.ts`（被 `agenthop install` 写盘）。改技能文案后要跑一次 build，否则二进制里还是旧文本。README、`bin.ts` 的 `printHelp`、`skill/SKILL.md` 三处说法必须一致，**以 SKILL.md 为准**。
+- **SKILL.md 是生成源**：`skill/SKILL.md` 由 `scripts/build-release.mjs` 转成 `packages/cli/src/skill-text.ts`（被 `agenthop install` 写盘）。改技能文案后要跑一次 build，否则二进制里还是旧文本。README、`bin.ts` 的 `printHelp`、`skill/SKILL.md` 三处说法必须一致，**以 SKILL.md 为准**。`README.en.md` 是 `README.md` 的英文版，**逐节对应**：改一个就改另一个，状态表两边的行必须一样多。
 - **文案写正面规则，不要堆禁令**。真正的要求只有两条：一个进程从头跑到尾，整个过程用户看得见。不要再去点名某个具体错法（某某命令、某某文件名）——那是在描述一次事故，不是在描述规则。老的 flag 和命令在 `args.ts` 的 `RETIRED_FLAGS` / `RETIRED_COMMANDS` 里给迁移提示，这是唯一该出现旧名字的地方。
 - **版本号在 `packages/cli/src/version.ts`**，`agenthop update` 拿它和中继 `/latest` 比较。发版要改它。
 - **两个上限不要再对不上**：`packages/agent` 的 `MAX_ATTACHMENT_BYTES` 是 512 KiB，但 express 的 JSON body 默认只有 100 KiB，于是 96 KiB 的附件就会撞上一个 HTML 413。`host.ts` 现在先挂 `express.json({ limit: "2mb" })`（body-parser 见到 `req._body` 就不会再解析一次），512 KiB 才真的能过。改任一处都要把另一处一起看。
@@ -115,4 +115,4 @@ tunnel ─┬─ relay-node（自建中继，ws + node:http）
 - **词表里每个词都得是一段纯小写字母**（`tunnel.test.ts` 有不变量测试）。`wordlist.ts` 曾经混进一个 `yo-yo`，抽中就生成五段码，中继直接拒绝，0.23% 的会话一开就废。`generateCode` 现在也校验自己的输出。
 - 房间 10 分钟没有转发就消失（`IDLE_MS`）。TLS 在 Cloudflare 终结，但中继拿到的是密文——**没有前向保密，附件的字节也不加密**，别在文档里暗示有。
 - 附件（`packages/agent`，512 KiB 上限）在协议和 `Room` 里还在，但会话流程没有入口。`SPEC.md` 仍然描述它，不要顺手删。
-- 注释和 commit message 用英文，README / SKILL.md / CLI 帮助文本用中文。
+- 注释和 commit message 用英文，README / SKILL.md / CLI 帮助文本用中文（`README.en.md` 除外）。
