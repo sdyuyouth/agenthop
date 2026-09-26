@@ -37,7 +37,22 @@ describe("agenthop as an MCP server", () => {
     const { relay, creator } = await room();
     const { tools } = await creator.client.listTools();
     expect(tools.map((tool) => tool.name).sort()).toEqual(
-      ["agenthop_bye", "agenthop_create", "agenthop_join", "agenthop_say", "agenthop_send_file", "agenthop_status", "agenthop_wait", "agenthop_working"].sort(),
+      [
+        "agenthop_accept",
+        "agenthop_bye",
+        "agenthop_contacts",
+        "agenthop_create",
+        "agenthop_decline",
+        "agenthop_forget_contact",
+        "agenthop_invite",
+        "agenthop_join",
+        "agenthop_save_contact",
+        "agenthop_say",
+        "agenthop_send_file",
+        "agenthop_status",
+        "agenthop_wait",
+        "agenthop_working",
+      ].sort(),
     );
     for (const tool of tools) expect(tool.description, tool.name).toBeTruthy();
     await relay.close();

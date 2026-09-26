@@ -40,6 +40,16 @@ export type HostOptions = {
   onGone?: (reason: string) => void;
   /** How long to keep reopening the room before giving up. */
   recoverMs?: number;
+  /**
+   * The token that holds the room at the relay. Random unless given: a room that must be taken
+   * straight back after a restart — the inbox — derives it from something only it has.
+   */
+  token?: string;
+  /**
+   * Whether anyone with the address may read the room's record over the relay. A conversation
+   * needs it (the joining side reads it); an inbox does not, and has no reason to offer it.
+   */
+  serveQueue?: boolean;
 };
 
 export type RunningHost = {
@@ -55,7 +65,7 @@ export async function startHost(options: HostOptions = {}): Promise<RunningHost>
   const code = addressOf(options.code ?? generateCode());
   // One token for the life of the room. Reopening the room after a blip shows the same one, so
   // the relay can tell the host coming back from someone else who picked up the code.
-  const token = randomBytes(32).toString("base64url");
+  const token = options.token ?? randomBytes(32).toString("base64url");
   const relay = options.relay ?? process.env.AGENTHOP_RELAY ?? DEFAULT_RELAY;
   const home = options.home ?? path.join(homedir(), ".agenthop");
   const { publicBase, hostUrl } = relayEndpoints(relay, code);
@@ -76,6 +86,10 @@ export async function startHost(options: HostOptions = {}): Promise<RunningHost>
   const card = agentCard(localUrl.url);
   const handler = new DefaultRequestHandler(card, new InMemoryTaskStore(), room.executor());
   app.get("/agenthop/queue", (request, response) => {
+    if (options.serveQueue === false) {
+      response.status(404).end();
+      return;
+    }
     response.json({ events: room.since(Number(request.query.after ?? 0)).map(overTheRelay) });
   });
   app.use(`/${AGENT_CARD_PATH}`, agentCardHandler({ agentCardProvider: handler }));
@@ -158,24 +172,28 @@ export async function startHost(options: HostOptions = {}): Promise<RunningHost>
 
   const first = await openRoom();
   socket = first.ws;
+  let closed: Promise<void> | undefined;
 
   return {
     code,
     url: first.url,
     controlUrl: control.url,
-    close: async () => {
-      closing = true;
-      const open = socket;
-      if (open && (open.readyState === WebSocket.OPEN || open.readyState === WebSocket.CONNECTING)) {
-        await new Promise<void>((resolve) => {
-          open.once("close", () => resolve());
-          open.close();
-        });
-      }
-      await control.close();
-      await new Promise<void>((resolve, reject) => localUrl.server.close((error) => (error ? reject(error) : resolve())));
-    },
+    // Closing twice — the server shutting down while an inbox is already on its way out — is one close.
+    close: () => (closed ??= shut()),
   };
+
+  async function shut(): Promise<void> {
+    closing = true;
+    const open = socket;
+    if (open && (open.readyState === WebSocket.OPEN || open.readyState === WebSocket.CONNECTING)) {
+      await new Promise<void>((resolve) => {
+        open.once("close", () => resolve());
+        open.close();
+      });
+    }
+    await control.close();
+    await new Promise<void>((resolve, reject) => localUrl.server.close((error) => (error ? reject(error) : resolve())));
+  }
 }
 
 /**

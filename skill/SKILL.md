@@ -1,7 +1,7 @@
 ---
 name: agenthop
 description: >-
-  让两个不在同一台机器上的 agent 交换信息。用户要配对、收到配对码，或运行 /agenthop 时使用。
+  让两个不在同一台机器上的 agent 交换信息。用户要配对、收到配对码、要按名字找一个联系人对话，或运行 /agenthop 时使用。
   能调用 agenthop_create / agenthop_join 这些工具时就用工具，整个流程都在工具里；
   没有这些工具时，才用命令行启动 agenthop，让那个进程活到对话结束。对话要让用户看得到。
 user-invocable: true
@@ -25,6 +25,14 @@ user-invocable: true
 - **结束**：`agenthop_bye`，可以带一句告别的话。
 
 对方一次说了好几句时，把它们一起答掉，不要只答第一句。
+
+### 联系人：配一次，以后按名字找
+
+- 每场对话里对方会表明身份。`join` 的结果和 `wait` 里的 `identity` 一行写着"对方身份：alice（联系人……）"，或者"不在联系人里，指纹 xxxx-xxxx-xxxx-xxxx"。
+- 用户想以后直接找这个人，就用 `agenthop_save_contact(name)` 把对方存下，对话中或刚结束时都行。**两边都要存**，邀请才会被收下。
+- 之后用 `agenthop_invite(name, background)` 直接邀请，不用再转交配对码。对方的 agent 此刻要开着 agenthop 才收得到；不在线会直接告诉你，这时照旧用 `agenthop_create` 开房间、把配对码交给用户转过去。送到之后用 `agenthop_wait` 等它加入并确认。
+- 没有对话时，`agenthop_wait` 等的是联系人的邀请。**收到邀请先告诉用户**，用户同意了再 `agenthop_accept(from)`；不接就 `agenthop_decline(from, reason)`，对方马上知道。用户事先说过"有人找就接"的，可以直接接受。接受之后和 `join` 一样：读背景，相符就写一句确认。
+- `agenthop_contacts` 列出联系人和本机的指纹，`agenthop_forget_contact(name)` 删掉一个。
 
 每次工具调用的结果就是对话本身，用户在对话记录里就看得到。开房间和加入时还会给出日志文件的路径。
 
@@ -89,7 +97,7 @@ agenthop <配对码>
 
 只有这几行是"轮到你了"：`peer hello`、`peer confirm`、`peer say`、`peer files`、`peer bye`。
 
-`peer working` 是对方在干活的进度，**不要为它起一轮**——它存在的意义就是让你知道可以安心等着。`local` 开头的都是自己的记录，同样不用回应。
+`peer working` 是对方在干活的进度，**不要为它起一轮**——它存在的意义就是让你知道可以安心等着。`peer identity` 是对方的身份（联系人的名字，或者一个指纹），同样不用回应。`local` 开头的都是自己的记录，也不用回应。
 
 程序不提供输出过滤的开关：标准输出永远是完整的一份，因为整个过程要让用户看得见。要只在轮到自己时醒来，就从日志的当前末尾开始等：
 
@@ -151,7 +159,7 @@ tail -n 0 -f <日志路径> | grep -m1 -E ' peer (say|bye|hello|confirm|files)( 
 <时间> <local|peer> <状态> <正文>
 ```
 
-状态有 `log`、`waiting`、`connected`、`hello`、`confirm`、`ready`、`say`、`working`、`bye`，以及上面那一节里的 `reconnecting`、`reconnected`、`undelivered`、`throttled`、`gone`、`expired`、`refused`、`files`、`other`、`input-closed`。`local` 是自己，`peer` 是对方。时间是本机时间，带时区偏移。
+状态有 `log`、`waiting`、`connected`、`identity`、`hello`、`confirm`、`ready`、`say`、`working`、`bye`，以及上面那一节里的 `reconnecting`、`reconnected`、`undelivered`、`throttled`、`gone`、`expired`、`refused`、`files`、`other`、`input-closed`。`local` 是自己，`peer` 是对方。时间是本机时间，带时区偏移。
 
 ## 中继
 

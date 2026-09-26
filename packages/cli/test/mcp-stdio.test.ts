@@ -67,6 +67,7 @@ function server(relay: string, home: string) {
     });
   return {
     lines,
+    child,
     async start() {
       await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "0" } });
       child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
@@ -120,6 +121,55 @@ describe("agenthop mcp as a process", () => {
       // And the log still went where it always goes.
       const log = created.match(/日志：(\S+?\.create\.log)/)?.[1];
       expect(log && existsSync(log), created).toBe(true);
+    },
+    120_000,
+  );
+
+  it(
+    "keeps standard output to the protocol with an inbox held open, and leaves when its input ends",
+    async () => {
+      const relay = await startRelay();
+      relays.push(relay);
+      const dir = await mkdtemp(path.join(tmpdir(), "agenthop-mcp-stdio-"));
+      const alice = server(relay.url, path.join(dir, "alice"));
+      const bob = server(relay.url, path.join(dir, "bob"));
+      await Promise.all([alice.start(), bob.start()]);
+
+      const created = await alice.call("agenthop_create", { background: "认识一下" });
+      const code = created.match(/\d{4}-[a-z]+-[a-z]+-[a-z]+-[a-z2-7]{26}/)?.[0];
+      await bob.call("agenthop_join", { code });
+      await bob.call("agenthop_say", { text: "你好" });
+      await alice.call("agenthop_wait", { timeout_seconds: 15 });
+      await alice.call("agenthop_save_contact", { name: "bob" });
+      await bob.call("agenthop_save_contact", { name: "alice" });
+      await alice.call("agenthop_bye");
+      await bob.call("agenthop_wait", { timeout_seconds: 15 });
+      for (let i = 0; i < 100 && !(await bob.call("agenthop_status")).includes("收件地址：在线"); i++) await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(await alice.call("agenthop_invite", { name: "bob", background: "按名字找你" })).toContain("邀请已经送到 bob");
+      expect(await bob.call("agenthop_wait", { timeout_seconds: 15 })).toContain("alice 邀请你对话");
+      expect(await bob.call("agenthop_accept", { from: "alice" })).toContain("对方身份：alice（联系人");
+      await bob.call("agenthop_say", { text: "来了" });
+      expect(await alice.call("agenthop_wait", { timeout_seconds: 15 })).toContain("来了");
+      await alice.call("agenthop_bye");
+
+      for (const side of [alice, bob]) {
+        for (const line of side.lines) {
+          let parsed: { jsonrpc?: string } | undefined;
+          try {
+            parsed = JSON.parse(line) as { jsonrpc?: string };
+          } catch {
+            parsed = undefined;
+          }
+          expect(parsed?.jsonrpc, `not JSON-RPC on standard output: ${line}`).toBe("2.0");
+        }
+      }
+
+      // The harness going away is the end, inbox or not: a server that stayed would keep the
+      // inbox from the next one.
+      const exited = new Promise<number | null>((resolve) => bob.child.once("exit", resolve));
+      bob.child.stdin.end();
+      expect(await Promise.race([exited, new Promise((resolve) => setTimeout(() => resolve("still running"), 5_000))])).toBe(0);
     },
     120_000,
   );

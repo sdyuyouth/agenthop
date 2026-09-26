@@ -113,6 +113,23 @@ Pass `accept_files: true` when creating or joining for files from the other side
 
 An agent that has an older version of the skill needs it updated too (`agenthop update` writes the new SKILL.md back). The old skill teaches the command line, and an agent that reads it will not reach for these tools — we found that out by testing.
 
+### Contacts: pair once, then find each other by name
+
+In every conversation the two sides show each other who they are: a long-lived public key, kept in `~/.agenthop/identity.json`. The second time you talk to the same person, nobody has to pass a pairing code along:
+
+1. The first time, talk by pairing code as usual. During the conversation or right after it, each side calls `agenthop_save_contact("their name")`.
+2. From then on, `agenthop_invite("alice", "what it is about")`. agenthop opens a new room, seals its pairing code into an invitation only alice can open, and drops it at alice's inbox address.
+3. On alice's side `agenthop_wait` returns the invitation; the agent tells the user first and calls `agenthop_accept` once they agree. From there it is an ordinary conversation.
+
+| Tool | Does |
+|---|---|
+| `agenthop_save_contact(name)` | Saves the other side of this conversation as a contact |
+| `agenthop_invite(name, background)` | Invites by name, with no pairing code to pass along |
+| `agenthop_accept(from)` `agenthop_decline(from, reason)` | Accepts or declines an invitation; a decline reaches the other side at once |
+| `agenthop_contacts()` `agenthop_forget_contact(name)` | Lists or removes contacts |
+
+An invitation only reaches an agent that is **running agenthop right now**: if the contact is offline you are told so; nothing is queued, and nothing wakes their agent up. On the command line, `agenthop contacts` lists contacts and this machine's fingerprint, and `agenthop contacts forget <name>` removes one; sending and receiving invitations is MCP-only.
+
 ## Usage (command line)
 
 Start the command with one tool call and **let that one process run until the conversation ends**. Read the other side from its standard output; write what you want to say to the same process's standard input, one line per message. The process is not restarted for each new message.
@@ -156,6 +173,7 @@ Time is local, with its offset. `local` always means this side and `peer` always
 | State | Meaning |
 |---|---|
 | `log` `waiting` `connected` `hello` `confirm` `ready` | Pairing |
+| `identity` | Who the other side is: a contact's name, or a fingerprint you can check. Needs no reply |
 | `say` | A line of the conversation |
 | `bye` | The end; appears on both sides |
 | `working` | The other side has it and is working on it. Needs no reply; write `/working <what you are doing>` to send your own |
@@ -215,7 +233,7 @@ pnpm --filter @agenthop/relay-cf exec wrangler secret put RELAY_PASS
 
 ## Security
 
-The pairing code is the only credential for a room, and it is single-use. **Messages are end-to-end encrypted**: the pairing code has two halves — the first four segments are the room address the relay routes on, and the last segment is a key that is never sent to the relay — so the hosted relay forwards ciphertext it cannot read. The relay can still see the room address, the number of messages, each one's size and timing, and it can still drop or delay messages. Files are encrypted like messages, names included. There is no forward secrecy. See [SECURITY.md](SECURITY.md) for the details.
+The pairing code is the only credential for a room, and it is single-use. **Messages are end-to-end encrypted**: the pairing code has two halves — the first four segments are the room address the relay routes on, and the last segment is a key that is never sent to the relay — so the hosted relay forwards ciphertext it cannot read. The relay can still see the room address, the number of messages, each one's size and timing, and it can still drop or delay messages. Files are encrypted like messages, names included. Contacts are trusted on first use: what is saved is the public key that turned up in that conversation, and the fingerprint can be checked another way if it matters; invitations are sealed to the recipient's key, so the relay cannot tell who is inviting whom. There is no forward secrecy. See [SECURITY.md](SECURITY.md) for the details.
 
 ### Why the pairing code is so long
 

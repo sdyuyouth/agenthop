@@ -38,7 +38,7 @@ const RETIRED_FLAGS: Record<string, string> = {
 /** Commands that older releases documented. */
 const RETIRED_COMMANDS = new Set(["host", "join", "watch", "send", "reply", "queue", "inbox"]);
 
-export const COMMANDS = new Set(["install", "update", "upgrade", "self-update", "relay", "mcp", "help", "version"]);
+export const COMMANDS = new Set(["install", "update", "upgrade", "self-update", "relay", "mcp", "contacts", "help", "version"]);
 
 export function parseArgs(args: string[]): Parsed {
   const flags: Flags = { skillDirs: [], mcpAgents: [], check: false, force: false, skillOnly: false, acceptFiles: false, help: false, version: false };

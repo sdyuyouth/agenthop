@@ -7,6 +7,7 @@ import { generateCode, splitCode } from "@agenthop/tunnel";
 import { readQueue, roomBase, sendMessage, Throttled } from "./send.js";
 import { RECOVER_MS, startHost, type RunningHost } from "./host.js";
 import { channel, SEALED_TYPE, type Channel } from "./seal.js";
+import { contactByKey, fingerprint, isPublicKey, loadIdentity, type Identity } from "./identity.js";
 import { type SessionEvent } from "./talk.js";
 
 /** Written on stdin to end the conversation on purpose. */
@@ -28,6 +29,7 @@ export const MAX_LINE_BYTES = 64 * 1024;
 const REFUSE_NO_KEY = "有人用这个房间地址说话，但拿不出配对码里的密钥，已经忽略";
 const REFUSE_SEAT_TAKEN = "已经有人用这个配对码加入了，一个房间只接一个对端";
 const REFUSE_NOT_PEER = "这一句拿着完整的配对码，却不是已经加入的那一方发的，已经忽略";
+const REFUSE_NOT_INVITED = "这个房间是为邀请开的，加入的不是被邀请的那个人";
 
 const LOCAL_POLL_MS = 200;
 const RELAY_POLL_MS = 1000;
@@ -59,6 +61,15 @@ export type SessionOptions = {
    * needs this: its standard output is the protocol, and one stray log line breaks it.
    */
   emit?: (entry: LogEntry) => void;
+  /**
+   * Who this side is, shown to the other side inside the conversation. Loaded from `home`
+   * unless given; `false` shows nothing, as versions before contacts did.
+   */
+  identity?: Identity | false;
+  /** Only this public key may be the other side: the contact an invitation was sent to, or came from. */
+  expectPeer?: string;
+  /** The other side's public key, once it has shown one. */
+  onPeerKey?: (publicKey: string) => void;
 };
 
 /** One line of the log, as its parts. `text` is as sent; `line` is what the file holds. */
@@ -87,8 +98,18 @@ export function lineQueue(): LineSource & { push(text: string): void; end(): voi
 export async function runSession(options: SessionOptions): Promise<void> {
   const home = options.home ?? path.join(homedir(), ".agenthop");
   const lines = options.lines ?? stdinLines();
-  if (options.code) await joinSession({ ...options, lines }, home);
-  else await createSession({ ...options, lines }, home);
+  const identity = options.identity === false ? false : (options.identity ?? ownIdentity(home));
+  if (options.code) await joinSession({ ...options, lines, identity }, home);
+  else await createSession({ ...options, lines, identity }, home);
+}
+
+/** A home that cannot hold an identity still holds a conversation, just an anonymous one. */
+function ownIdentity(home: string): Identity | false {
+  try {
+    return loadIdentity(home);
+  } catch {
+    return false;
+  }
 }
 
 async function createSession(options: SessionOptions, home: string): Promise<void> {
@@ -133,7 +154,11 @@ async function hostConversation(
         return REFUSE_NO_KEY;
       }
       if (peerId === undefined) {
-        if (wire.kind === "connect") peerId = wire.id;
+        if (wire.kind !== "connect") return true;
+        // An invitation's code was sealed to one person. Someone else arriving with it is refused
+        // before they take the seat, so the right one can still come in after them.
+        if (options.expectPeer && wire.text !== options.expectPeer) return REFUSE_NOT_INVITED;
+        peerId = wire.id;
         return true;
       }
       // Both of these hold the secret, so neither is a stranger — and telling them they are
@@ -193,6 +218,13 @@ async function hostConversation(
         }
         if (phase === "wait-connect" && wire.kind === "connect") {
           write(log, "peer", "connected");
+          // A joining side that shows who it is hears who this side is, before the hello. One that
+          // shows nothing is an older version, and would only log a line it does not know.
+          if (isPublicKey(wire.text)) {
+            introduce(log, home, wire.text);
+            options.onPeerKey?.(wire.text);
+            if (options.identity) await say(identityWire(options.identity.publicKey));
+          }
           await say(helloWire(hello));
           write(log, "local", "hello", hello);
           phase = "wait-confirm";
@@ -246,7 +278,7 @@ async function joinConversation(options: SessionOptions, home: string, code: str
     });
   write(log, "local", "log", log);
   try {
-    await send(connectWire(id));
+    await send(connectWire(id, options.identity ? options.identity.publicKey : ""));
   } catch (error) {
     throw new Error(joinFailure(error));
   }
@@ -258,6 +290,7 @@ async function joinConversation(options: SessionOptions, home: string, code: str
   let saidBye = 0;
   let phase: "wait-hello" | "wait-confirm" | "ready" = "wait-hello";
   const early: string[] = [];
+  let hostKey: string | undefined;
   // Everything that never went — including lines held back because the hello had not arrived.
   const reportUnsent = (): void => {
     for (const text of early.splice(0)) write(log, "local", "undelivered", unsent(text));
@@ -299,7 +332,21 @@ async function joinConversation(options: SessionOptions, home: string, code: str
         await answerBye(() => send(byeWire(id)), log);
         return;
       }
-      if (phase === "wait-hello" && wire.kind === "hello") {
+      if (phase === "wait-hello" && wire.kind === "identity" && !hostKey && isPublicKey(wire.text)) {
+        hostKey = wire.text;
+        if (options.expectPeer && hostKey !== options.expectPeer) {
+          write(log, "peer", "refused", `开这个房间的不是发邀请的那个人（指纹 ${fingerprint(hostKey)}），已经离开`);
+          reportUnsent();
+          return;
+        }
+        introduce(log, home, hostKey);
+        options.onPeerKey?.(hostKey);
+      } else if (phase === "wait-hello" && wire.kind === "hello") {
+        if (options.expectPeer && !hostKey) {
+          write(log, "peer", "refused", "开这个房间的一方没有表明身份，对不上发邀请的人，已经离开");
+          reportUnsent();
+          return;
+        }
         write(log, "peer", "hello", wire.text);
         phase = "wait-confirm";
       } else if (phase === "ready" && wire.kind === "say") {
@@ -532,6 +579,18 @@ export function brief(text: string, max = 80): string {
   return flat.length <= max ? flat : `${flat.slice(0, max)}…（共 ${flat.length} 字）`;
 }
 
+/** Who the other side is, as far as this machine knows: a contact's name, or a fingerprint to check. */
+function introduce(logFile: string, home: string, publicKey: string): void {
+  let known: string | undefined;
+  try {
+    known = contactByKey(home, publicKey)?.name;
+  } catch {
+    known = undefined;
+  }
+  const print = fingerprint(publicKey);
+  write(logFile, "peer", "identity", known ? `${known}（联系人，指纹 ${print}）` : `不在联系人里，指纹 ${print}`);
+}
+
 /** Attachments are not written to disk unless the person asked for that, so say what arrived. */
 function noteFiles(logFile: string, event: SessionEvent, kept: boolean): void {
   if (event.files.length === 0) return;
@@ -561,6 +620,9 @@ function joinFailure(error: unknown): string {
   // The room answered and said no. Say what it said, rather than guess at a typo.
   if (detail.includes(REFUSE_SEAT_TAKEN)) {
     return `加入房间失败：${REFUSE_SEAT_TAKEN}。配对码本身没有问题。如果是你之前加入过又退出了，请对方重新执行 agenthop "<任务背景>" 开一个新房间。`;
+  }
+  if (detail.includes(REFUSE_NOT_INVITED)) {
+    return `加入房间失败：${REFUSE_NOT_INVITED}。`;
   }
   if (detail.includes(REFUSE_NO_KEY)) {
     return "加入房间失败：配对码最后一段的密钥对不上，多半是复制的时候漏了或多了字符。请对方把 waiting 那一行整行重新发一遍。";
@@ -628,7 +690,7 @@ export function stamp(now = new Date()): string {
 }
 
 export type Wire = {
-  kind: "connect" | "hello" | "confirm" | "say" | "working" | "file" | "bye" | "sealed" | "other";
+  kind: "connect" | "identity" | "hello" | "confirm" | "say" | "working" | "file" | "bye" | "sealed" | "other";
   id: string;
   text: string;
 };
@@ -770,7 +832,7 @@ function unsent(text: string): string {
  * person holding the same code cannot be mistaken for the peer. The id travels inside the seal,
  * which is what makes it worth checking: forging one means holding the secret.
  */
-const KINDS = new Set(["connect", "hello", "confirm", "say", "working", "file", "bye", "sealed"]);
+const KINDS = new Set(["connect", "identity", "hello", "confirm", "say", "working", "file", "bye", "sealed"]);
 
 export function parseWire(text: string): Wire {
   const match = text.match(/^\[\[agenthop:([a-z]+)(?::([A-Za-z0-9-]+))?]] ?([\s\S]*)$/);
@@ -787,8 +849,14 @@ function wire(kind: string, id: string | undefined, text: string): string {
   return `[[agenthop:${kind}${id ? `:${id}` : ""}]]${text ? ` ${text}` : ""}`;
 }
 
-function connectWire(id: string): string {
-  return wire("connect", id, "");
+/** The joining side's first line. It carries its public key; versions before contacts sent it empty. */
+function connectWire(id: string, publicKey: string): string {
+  return wire("connect", id, publicKey);
+}
+
+/** The creating side's answer in kind, sent only to a joining side that showed its own. */
+function identityWire(publicKey: string): string {
+  return wire("identity", undefined, publicKey);
 }
 
 function helloWire(text: string): string {

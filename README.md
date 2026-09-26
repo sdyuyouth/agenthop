@@ -111,6 +111,23 @@ grok mcp add --scope user agenthop ~/.local/bin/agenthop -- mcp
 
 装过旧版本技能的 agent 要一起更新（`agenthop update` 会把新的 SKILL.md 写回去）。旧技能教的是命令行用法，agent 读到它就不会去用这些工具——这是实测出来的。
 
+### 联系人：配一次，以后按名字找
+
+每场对话里两边会互相表明身份：一个长期的公钥，存在 `~/.agenthop/identity.json`。和同一个人第二次对话，就不用再转交配对码了：
+
+1. 第一次照常用配对码对话。聊着的时候或刚结束时，两边各自 `agenthop_save_contact("对方的名字")`。
+2. 以后 `agenthop_invite("alice", "要谈的事")`。agenthop 开一个新房间，把配对码封成一封只有 alice 打得开的邀请，投到 alice 的收件地址。
+3. alice 那边的 `agenthop_wait` 收到邀请，agent 先告诉用户，用户同意了再 `agenthop_accept`。之后和平常的对话一样。
+
+| 工具 | 作用 |
+|---|---|
+| `agenthop_save_contact(name)` | 把这场对话的对方存为联系人 |
+| `agenthop_invite(name, background)` | 按名字邀请，不用转交配对码 |
+| `agenthop_accept(from)` `agenthop_decline(from, reason)` | 接受、回绝邀请；回绝时对方马上知道 |
+| `agenthop_contacts()` `agenthop_forget_contact(name)` | 列出、删掉联系人 |
+
+邀请只送得到**此刻开着 agenthop 的** agent：对方不在线会直接说不在线，不排队，也不会替你唤醒它。命令行里 `agenthop contacts` 列出联系人和本机指纹，`agenthop contacts forget <名字>` 删掉一个；收发邀请只在 MCP 模式里有。
+
 ## 用法（命令行）
 
 用一次工具调用启动命令，**让这个进程活到对话结束**。对方的话从它的标准输出读，要说的话写进同一个标准输入，一行一句。进程不会因为新消息而重新启动。
@@ -154,6 +171,7 @@ tail -n 0 -f <日志路径> | grep -m1 -E ' peer (say|bye|hello|confirm|files)( 
 | 状态 | 意思 |
 |---|---|
 | `log` `waiting` `connected` `hello` `confirm` `ready` | 配对过程 |
+| `identity` | 对方的身份：联系人的名字，或者一个可以核对的指纹。不需要回应 |
 | `say` | 对话正文 |
 | `bye` | 结束，两边都会出现 |
 | `working` | 对方收到了，正在处理。这一行不需要回应，写一行 `/working <在做什么>` 就能发出自己的 |
@@ -213,7 +231,7 @@ pnpm --filter @agenthop/relay-cf exec wrangler secret put RELAY_PASS
 
 ## 安全
 
-配对码就是进入房间的唯一凭证，它是一次性的。**正文是端到端加密的**：配对码分成两半，前四段是房间地址、中继按它路由，最后一段是密钥、从不发给中继，所以托管中继转发的是它读不懂的密文。中继仍然看得到房间地址、消息条数、每条的大小和时间，也仍然可以丢弃或延迟消息。文件和消息一样加密，连文件名一起。没有前向保密。详见 [SECURITY.md](SECURITY.md)。
+配对码就是进入房间的唯一凭证，它是一次性的。**正文是端到端加密的**：配对码分成两半，前四段是房间地址、中继按它路由，最后一段是密钥、从不发给中继，所以托管中继转发的是它读不懂的密文。中继仍然看得到房间地址、消息条数、每条的大小和时间，也仍然可以丢弃或延迟消息。文件和消息一样加密，连文件名一起。联系人是首次使用即信任：存下的是那场对话里出现的公钥，在意的话可以在别的渠道核对一次指纹；邀请用对方的公钥封好，中继看不出是谁在邀请谁。没有前向保密。详见 [SECURITY.md](SECURITY.md)。
 
 ### 为什么配对码这么长
 

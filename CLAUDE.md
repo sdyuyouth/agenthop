@@ -54,6 +54,7 @@ tunnel ─┬─ relay-node（自建中继，ws + node:http）
 - `wait` 只在轮到你时返回（`TURN`：hello / confirm / say / files / bye），其余动静（对方的 working、这边的 throttled 等）随结果一起给出；自己刚做的事（say、working、files）不回显，工具调用本身已经报过了。
 - 参数分类（反引号、年份开头那些）在 MCP 模式下整类不存在：创建和加入是两个工具。`agenthop_join` 仍然过一遍 `classifyInput`，因为 agent 照样会包反引号。
 - **装着旧技能的 agent 会绕过 MCP**。实测 grok 同时有 MCP 工具和 v0.4 的 SKILL.md 时，照技能走了命令行 + `tail | grep`。所以 SKILL.md 开头第一节就是"先看有没有 agenthop 工具"，改技能时别把它挪下去。
+- **联系人和邀请**（`identity.ts`、`invite.ts`、`inbox.ts`）。身份是每个家目录一对 X25519 密钥；加入方的 `connect` 正文带自己的公钥，创建方**只对带了公钥的加入方**在 hello 之前回一句 `[[agenthop:identity]]`——旧版本两边都一个字不多收。收件地址是由公钥派生的普通房间地址，中继不用改；它的 host 令牌由私钥派生（`startHost` 的 `token`），否则 MCP server 一重启，旧令牌的哈希还挂在中继上，要等房间过期才拿得回来；它不对外提供队列（`serveQueue: false`）。邀请是 Noise IK 的第一条消息的形状，发件人的公钥也封在里面。`accept` 解开并核对（联系人、十分钟、见过的 id），`onEvent` 再解一次把它交给 MCP——`open` 是纯函数，解两次没关系。邀请对话里 `expectPeer` 让两边再核对一次对方是不是邀请里的那个人。MCP 只在有联系人时挂收件地址。
 - `install` 默认只**打印**各 agent 的注册命令（`agents.ts`）；写进别的工具的配置是持久改动，只在 `--mcp <agent>` 点名时才做，而且不是纯 JSON 的配置文件不碰。
 
 创建方（`session.ts: createSession`）：
@@ -66,7 +67,7 @@ tunnel ─┬─ relay-node（自建中继，ws + node:http）
 
 **断线不等于结束**：创建方的 WS 掉了就按退避重开房间（`host.ts: recover`，同一个配对码，`RECOVER_MS` 45 秒），加入方读不到房间时也重试同样长。两边都会写 `reconnecting` / `reconnected`。房间是按配对码寻址的，所以重开之后对话接得上——`Talk` 日志在本地进程里，没丢。
 
-状态机靠**正文里的 wire 前缀**区分，不是靠协议字段：`[[agenthop:connect:<id>]]`、`[[agenthop:hello]] …`、`[[agenthop:confirm:<id>]] …`、`[[agenthop:say:<id>]] …`、`[[agenthop:working:<id>]] …`、`[[agenthop:bye:<id>]]`，全部再封进 `[[agenthop:sealed]] <密文>`（`session.ts: parseWire`）。顺序固定为 `connect → hello → confirm → ready → say → bye`；`working` 是一张收条，ready 之后随时可以出现，加入方确认之前写的也会照样发出去而不被当成确认语。认不出来的形式记成 `peer other`，别让它抛。加入方在 `wait-confirm` 之前写的行会被暂存（`early`），确认之后才放行——改这段时别把暂存丢了。
+状态机靠**正文里的 wire 前缀**区分，不是靠协议字段：`[[agenthop:connect:<id>]] <公钥>`、`[[agenthop:identity]] <公钥>`、`[[agenthop:hello]] …`、`[[agenthop:confirm:<id>]] …`、`[[agenthop:say:<id>]] …`、`[[agenthop:working:<id>]] …`、`[[agenthop:bye:<id>]]`，全部再封进 `[[agenthop:sealed]] <密文>`（`session.ts: parseWire`）。顺序固定为 `connect → (identity) → hello → confirm → ready → say → bye`；`working` 是一张收条，ready 之后随时可以出现，加入方确认之前写的也会照样发出去而不被当成确认语。认不出来的形式记成 `peer other`，别让它抛。加入方在 `wait-confirm` 之前写的行会被暂存（`early`），确认之后才放行——改这段时别把暂存丢了。
 
 `<id>` 是加入方自己生成的，创建方只认第一个 connect 带来的那个。`accept` 返回拒绝**理由**而不只是布尔值（`REFUSE_NO_KEY` / `REFUSE_SEAT_TAKEN` / `REFUSE_NOT_PEER`），这串文字会原样回到发送方——第二个加入者拿着正确的码，被告知"配对码可能打错了"只会让人去找一个不存在的错字。**这个 id 在密封层里面**——能造出一句合法密文就证明握有配对码里的密钥，所以 `accept` 现在是密码学的，不是约定俗成的。v0.4 之前有一条"没有 id 的行按旧版本接受"的兼容，已经删掉：旧版本的对端根本造不出密文，那条分支谁也保护不了，只是把 `accept` 开了个口子。房间本身仍然不认人：拿到地址的人都能 POST，过滤发生在会话层。
 

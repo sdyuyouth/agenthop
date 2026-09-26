@@ -86,6 +86,8 @@ the conversation happens above the relay, in the endpoints that hold the secret.
 
 A room closes after 10 minutes with no frames and no HTTP. The next request is `404`.
 
+An inbox (v0.5.0) is an ordinary room, and the relay cannot tell it from one. Its address is derived from the owner's public key, its host token from the owner's private key — so a restarted host takes it straight back — and it answers `404` on `agenthop/queue`. It stays open by reading its own Agent Card through the relay every few minutes. Invitations posted to it are sealed to the owner's key; what they carry is a pairing code for a separate room.
+
 One room may carry 64 MiB while it lives, counting both directions. Past that the relay answers
 `429` and the room is spent. This is the relay's own ceiling: the conversation has a smaller one
 that the host applies to itself, and a client that does not play along would otherwise spend the
