@@ -154,6 +154,9 @@ export async function startRelay(options: RelayOptions = {}): Promise<RunningRel
   });
 
   function attachHost(ws: WebSocket, roomId: string, code: string, requestUrl: URL): void {
+    // A host whose connection resets raises an error here; unheard, it would take the relay down
+    // with it. The close that follows cleans up the room.
+    ws.on("error", () => undefined);
     const existing = rooms.get(roomId);
     if (existing?.socket && existing.socket.readyState === WebSocket.OPEN) {
       ws.send(encodeControl({ v: 1, type: "error", code: "room_taken" }));

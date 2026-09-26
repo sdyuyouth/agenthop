@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Role, type Task } from "@a2a-js/sdk";
-import { ClientFactory } from "@a2a-js/sdk/client";
+import { ClientFactory, type Client } from "@a2a-js/sdk/client";
 import { filesFromPaths, messageFromParts, partsFromMessage, type HopFile } from "@agenthop/agent";
 import { normalizeCode, relayEndpoints } from "@agenthop/tunnel";
 import { DEFAULT_RELAY } from "./host.js";
@@ -23,6 +23,24 @@ export type SendOptions = {
  */
 export class Throttled extends Error {}
 
+/**
+ * One client per room. Making one fetches the room's Agent Card through the relay and the tunnel
+ * — a whole extra round trip — and doing that for every line halved how fast a conversation
+ * could go over a relay far away. The client picks up `fetch` when it sends, so the password
+ * header still applies.
+ */
+const clients = new Map<string, Promise<Client>>();
+
+function clientFor(publicBase: string): Promise<Client> {
+  let client = clients.get(publicBase);
+  if (!client) {
+    client = new ClientFactory().createFromUrl(publicBase);
+    clients.set(publicBase, client);
+    client.catch(() => clients.delete(publicBase));
+  }
+  return client;
+}
+
 /** Post one line into the room over the relay. Resolves once the host has it in order. */
 export async function sendMessage(options: SendOptions): Promise<SessionEvent> {
   const publicBase = roomBase(options.relay, options.code);
@@ -36,7 +54,7 @@ export async function sendMessage(options: SendOptions): Promise<SessionEvent> {
     };
   }
   try {
-    const client = await new ClientFactory().createFromUrl(publicBase);
+    const client = await clientFor(publicBase);
     const task = asTask(
       await throttledAs(client.sendMessage({
         tenant: "",
@@ -64,6 +82,10 @@ export async function sendMessage(options: SendOptions): Promise<SessionEvent> {
     const ack = JSON.parse(textOf(task)) as SessionEvent | { refused: string };
     if ("refused" in ack) throw new Error(ack.refused);
     return ack;
+  } catch (error) {
+    // The room may have gone and come back; the next line starts from its Agent Card again.
+    if (!(error instanceof Throttled)) clients.delete(publicBase);
+    throw error;
   } finally {
     globalThis.fetch = previous;
   }

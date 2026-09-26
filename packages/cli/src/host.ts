@@ -56,6 +56,11 @@ export type RunningHost = {
   code: string;
   url: string;
   controlUrl: string;
+  /**
+   * Whether everything in the room has been handed to a reader over the relay. The side that
+   * reads over the relay has to have been given a goodbye before the room closes under it.
+   */
+  handedOver: () => boolean;
   close: () => Promise<void>;
 };
 
@@ -85,12 +90,15 @@ export async function startHost(options: HostOptions = {}): Promise<RunningHost>
   const localUrl = await listen(app);
   const card = agentCard(localUrl.url);
   const handler = new DefaultRequestHandler(card, new InMemoryTaskStore(), room.executor());
+  let served = 0;
   app.get("/agenthop/queue", (request, response) => {
     if (options.serveQueue === false) {
       response.status(404).end();
       return;
     }
-    response.json({ events: room.since(Number(request.query.after ?? 0)).map(overTheRelay) });
+    const events = room.since(Number(request.query.after ?? 0));
+    served = Math.max(served, events.at(-1)?.seq ?? 0);
+    response.json({ events: events.map(overTheRelay) });
   });
   app.use(`/${AGENT_CARD_PATH}`, agentCardHandler({ agentCardProvider: handler }));
   app.use(jsonRpcHandler({ requestHandler: handler, userBuilder: UserBuilder.noAuthentication }));
@@ -112,6 +120,10 @@ export async function startHost(options: HostOptions = {}): Promise<RunningHost>
     const ws = new WebSocket(hostUrl, {
       headers: options.pass ? { authorization: `Bearer ${options.pass}` } : undefined,
     });
+    // An error on a socket with nobody listening ends the process. The relay going away
+    // abruptly — killed, restarted, a network blip — raises one, sometimes more than one, and the
+    // compiled binary died of it mid-conversation. The close that follows is what reopens the room.
+    ws.on("error", () => undefined);
     // A refusal can arrive the moment the relay accepts the socket, before we have sent
     // anything. Listen first: waiting for the open event before attaching means missing it and
     // then waiting out the deadline for a `ready` that was never coming.
@@ -178,6 +190,7 @@ export async function startHost(options: HostOptions = {}): Promise<RunningHost>
     code,
     url: first.url,
     controlUrl: control.url,
+    handedOver: () => served >= room.latest(),
     // Closing twice — the server shutting down while an inbox is already on its way out — is one close.
     close: () => (closed ??= shut()),
   };

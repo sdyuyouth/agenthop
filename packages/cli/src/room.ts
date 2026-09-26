@@ -70,6 +70,10 @@ export class Room {
     return this.talk.since(seq);
   }
 
+  latest(): number {
+    return this.talk.latest();
+  }
+
   async local(input: { id: string; text: string; files?: string[]; blobs?: SessionFile[] }): Promise<SessionEvent> {
     const paths = input.files ?? [];
     const loaded = await filesFromPaths(paths);

@@ -55,6 +55,8 @@ tunnel ─┬─ relay-node（自建中继，ws + node:http）
 - 参数分类（反引号、年份开头那些）在 MCP 模式下整类不存在：创建和加入是两个工具。`agenthop_join` 仍然过一遍 `classifyInput`，因为 agent 照样会包反引号。
 - **装着旧技能的 agent 会绕过 MCP**。实测 grok 同时有 MCP 工具和 v0.4 的 SKILL.md 时，照技能走了命令行 + `tail | grep`。所以 SKILL.md 开头第一节就是"先看有没有 agenthop 工具"，改技能时别把它挪下去。
 - **联系人和邀请**（`identity.ts`、`invite.ts`、`inbox.ts`）。身份是每个家目录一对 X25519 密钥；加入方的 `connect` 正文带自己的公钥，创建方**只对带了公钥的加入方**在 hello 之前回一句 `[[agenthop:identity]]`——旧版本两边都一个字不多收。收件地址是由公钥派生的普通房间地址，中继不用改；它的 host 令牌由私钥派生（`startHost` 的 `token`），否则 MCP server 一重启，旧令牌的哈希还挂在中继上，要等房间过期才拿得回来；它不对外提供队列（`serveQueue: false`）。邀请是 Noise IK 的第一条消息的形状，发件人的公钥也封在里面。`accept` 解开并核对（联系人、十分钟、见过的 id），`onEvent` 再解一次把它交给 MCP——`open` 是纯函数，解两次没关系。邀请对话里 `expectPeer` 让两边再核对一次对方是不是邀请里的那个人。MCP 只在有联系人时挂收件地址。
+- **每个 WebSocket 都要一直挂着 `error` 监听**。编译出的 Bun 程序在中继突然消失时会在 socket 上多抛一次错误；没人听，进程就退出了——v0.5.0 发布的二进制就是这样，Node 下的测试一次都没碰到过。重连靠的是随后的 `close`。`mcp-stdio.test.ts` 里"让中继消失几秒"那个用例要带 `AGENTHOP_BIN` 跑一次才算数。
+- **告别之后房间要留到对方读到为止**（`host.handedOver()`），不是固定几秒：经过真实中继，加入方光发出 bye 就要一秒多。
 - `install` 默认只**打印**各 agent 的注册命令（`agents.ts`）；写进别的工具的配置是持久改动，只在 `--mcp <agent>` 点名时才做，而且不是纯 JSON 的配置文件不碰。
 
 创建方（`session.ts: createSession`）：
@@ -73,7 +75,7 @@ tunnel ─┬─ relay-node（自建中继，ws + node:http）
 
 **stdin 的语义**：一行正文就是一句话；`/bye`（`session.ts: BYE`）结束对话；`/working <在做什么>`（`session.ts: WORKING`）发一张收条。收条走自己的状态词，是因为 agent 判断“轮到我了”靠的就是 `peer say`，收条要是也走 `say`，每收一句就要多烧对方一轮去读一句“收到”。**收条必须由 agent 写**：进程只知道自己把行打了出来，不知道模型有没有看，自动发等于谎报已读。EOF **不等于** bye——只写一行 `local input-closed` 然后继续收听，因为很多 agent harness 启动子进程时 stdin 本来就是关的，EOF 触发退出会让房间刚开就关。
 
-**告别是双向的**：收到 `[[agenthop:bye]]` 的一方自动把 bye 回过去再退出，先说的一方等这个回复，等不到就写 `peer gone`。`saidBye` 挡住无限对回。创建方作为回话方时要 linger 两秒再关房间，因为对方是隔着中继轮询读的。
+**告别是双向的**：收到 `[[agenthop:bye]]` 的一方自动把 bye 回过去再退出，先说的一方等这个回复，等不到就写 `peer gone`。`saidBye` 挡住无限对回。创建方作为回话方时要等对方把回过去的 bye 读走（`handOver`，最多 10 秒）再关房间，因为对方是隔着中继轮询读的——固定两秒在真实中继上不够。
 
 **送不出去的话要留痕**：`outbox.flush` 把发送失败的行写成 `local undelivered <正文>`，终止前 `reportUnsent()` 把还没送出的行也倒出来。静默丢话会让 agent 以为自己回复过——这是最不能退的一条。以下每一条都是按这个标准补上的洞，改这段时逐条对：`/bye` 后面同一口气写的行、等对方回 bye 时写的行、加入方在 hello 之前抢先写的行（`early`）、限流时排着的行（`backlog`），离场时都要写成 `undelivered`；自动回 bye 发不出去写 `local undelivered /bye`，不许抛。
 

@@ -7,7 +7,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { z } from "zod";
 import { MAX_ATTACHMENT_BYTES } from "@agenthop/agent";
 import { classifyInput } from "./args.js";
-import { BYE, FILE, lineQueue, runSession, WORKING, write, type LogEntry, type SessionOptions } from "./session.js";
+import { brief, BYE, FILE, lineQueue, runSession, WORKING, write, type LogEntry, type SessionOptions } from "./session.js";
 import { findContact, fingerprint, forgetContact, loadContacts, loadIdentity, saveContact, type Identity } from "./identity.js";
 import { deliverInvitation, INVITE_TTL_MS, startInbox, type Inbox, type Received } from "./inbox.js";
 import { version } from "./version.js";
@@ -52,6 +52,8 @@ type Conversation = {
   stop: AbortController;
   /** The other side's public key, once it has shown one: what `save_contact` keeps. */
   peerKey?: string;
+  /** Lines a tool call already answered with, so `wait` does not report them a second time. */
+  told: Set<LogEntry>;
 };
 
 type Pending = Received & { reported: boolean };
@@ -143,7 +145,7 @@ export async function startMcpServer(options: McpOptions = {}, transport: Transp
   }
 
   function begin(seat: Conversation["seat"], run: (conversation: Conversation) => Promise<void>): Conversation {
-    const conversation: Conversation = { seat, lines: lineQueue(), entries: [], seen: 0, done: false, stop: new AbortController() };
+    const conversation: Conversation = { seat, lines: lineQueue(), entries: [], seen: 0, done: false, stop: new AbortController(), told: new Set() };
     current = conversation;
     void run(conversation).then(
       () => {
@@ -158,13 +160,13 @@ export async function startMcpServer(options: McpOptions = {}, transport: Transp
   }
 
   function busy(): string | undefined {
-    if (current && !current.done) return "已经有一场对话在进行。先用 agenthop_bye 结束它，再开下一场。";
+    if (current && !over(current)) return "已经有一场对话在进行。先用 agenthop_bye 结束它，再开下一场。";
     return undefined;
   }
 
   function active(): Conversation | string {
     if (!current) return NO_CONVERSATION;
-    if (current.done) return `这场对话已经结束了。${current.failure ? `\n${current.failure}` : ""}`;
+    if (over(current)) return `这场对话已经结束了。${current.failure ? `\n${current.failure}` : ""}`;
     return current;
   }
 
@@ -249,13 +251,10 @@ export async function startMcpServer(options: McpOptions = {}, transport: Transp
       }
       if (!text.trim()) return failure("没有内容可说。");
       const mark = conversation.entries.length;
-      conversation.lines.push(text);
-      const outcome = await until(
-        conversation,
-        (entry) => entry.side === "local" && ["say", "confirm", "undelivered", "throttled"].includes(entry.state),
-        15_000,
-        mark,
-      );
+      const line = text.trim();
+      conversation.lines.push(line);
+      const outcome = await settle(conversation, mark, (entry) => (["say", "confirm"].includes(entry.state) && entry.text === line) || (entry.state === "undelivered" && unsentAs(entry, line)), 15_000);
+      if (outcome) conversation.told.add(outcome);
       if (!outcome) {
         const open = conversation.entries.some((entry) => entry.state === "ready");
         return reply(open ? "还没发出去，结果会出现在 agenthop_wait 里。" : "通道还没打开（对方还没确认），这句会在打开后按顺序发出。");
@@ -278,9 +277,13 @@ export async function startMcpServer(options: McpOptions = {}, transport: Transp
       const conversation = active();
       if (typeof conversation === "string") return failure(conversation);
       const mark = conversation.entries.length;
-      conversation.lines.push(text?.trim() ? `${WORKING} ${text.trim()}` : WORKING);
-      const outcome = await until(conversation, (entry) => entry.side === "local" && ["working", "undelivered", "throttled"].includes(entry.state), 15_000, mark);
+      const note = text?.trim() ?? "";
+      const line = note ? `${WORKING} ${note}` : WORKING;
+      conversation.lines.push(line);
+      const outcome = await settle(conversation, mark, (entry) => (entry.state === "working" && entry.text === note) || (entry.state === "undelivered" && unsentAs(entry, line)), 15_000);
+      if (outcome) conversation.told.add(outcome);
       if (outcome?.state === "undelivered") return failure(`收条没有送到：${outcome.text}`);
+      if (outcome?.state === "throttled") return reply(`${outcome.text}。收条排在里面，会按顺序发出。`);
       return reply("收条已发出。");
     },
   );
@@ -295,8 +298,11 @@ export async function startMcpServer(options: McpOptions = {}, transport: Transp
       const conversation = active();
       if (typeof conversation === "string") return failure(conversation);
       const mark = conversation.entries.length;
-      conversation.lines.push(`${FILE} ${path.resolve(filePath)}`);
-      const outcome = await until(conversation, (entry) => entry.side === "local" && ["files", "undelivered", "throttled"].includes(entry.state), 30_000, mark);
+      const line = `${FILE} ${path.resolve(filePath)}`;
+      const name = path.basename(filePath);
+      conversation.lines.push(line);
+      const outcome = await settle(conversation, mark, (entry) => (entry.state === "files" && entry.text.startsWith(`${name}（`)) || (entry.state === "undelivered" && unsentAs(entry, line)), 30_000);
+      if (outcome) conversation.told.add(outcome);
       if (!outcome) return reply("文件还没发出去（对方可能还没确认），结果会出现在 agenthop_wait 里。");
       if (outcome.state === "files") return reply(`已送达：${outcome.text}`);
       if (outcome.state === "throttled") return reply(`${outcome.text}。不用重发。`);
@@ -323,7 +329,7 @@ export async function startMcpServer(options: McpOptions = {}, transport: Transp
       while (Date.now() < deadline && !conversation.done && !turnSince(conversation)) await delay(100);
       const fresh = conversation.entries.slice(conversation.seen);
       conversation.seen = conversation.entries.length;
-      const shown = fresh.filter((entry) => entry.side === "peer" || LOCAL_WORTH_SAYING.has(entry.state));
+      const shown = fresh.filter((entry) => !conversation.told.has(entry) && (entry.side === "peer" || LOCAL_WORTH_SAYING.has(entry.state)));
       const body = shown.map(describe).join("\n");
       let status: string;
       if (conversation.done || shown.some((entry) => OVER.has(entry.state))) {
@@ -354,7 +360,7 @@ export async function startMcpServer(options: McpOptions = {}, transport: Transp
       conversation.lines.push(text?.trim() ? `${BYE} ${text.trim()}` : BYE);
       const deadline = Date.now() + 20_000;
       while (Date.now() < deadline && !conversation.done) await delay(100);
-      const fresh = conversation.entries.slice(conversation.seen).filter((entry) => entry.side === "peer" || LOCAL_WORTH_SAYING.has(entry.state));
+      const fresh = conversation.entries.slice(conversation.seen).filter((entry) => !conversation.told.has(entry) && (entry.side === "peer" || LOCAL_WORTH_SAYING.has(entry.state)));
       conversation.seen = conversation.entries.length;
       const body = fresh.map(describe).join("\n");
       const status = conversation.done ? "对话结束了。" : "告别已发出，还在等对方说回来。";
@@ -369,7 +375,7 @@ export async function startMcpServer(options: McpOptions = {}, transport: Transp
       if (!current) return reply(["现在没有对话。", ...standing()].join("\n"));
       const c = current;
       const has = (side: string, state: string) => c.entries.some((entry) => entry.side === side && entry.state === state);
-      const phase = c.done
+      const phase = over(c)
         ? "已结束"
         : has("local", "ready")
           ? "对话中"
@@ -632,6 +638,52 @@ function refusal(conversation: Conversation): string | undefined {
 function introduction(conversation: Conversation): string {
   const shown = conversation.entries.find((entry) => entry.side === "peer" && entry.state === "identity");
   return shown ? `对方身份：${shown.text}。\n` : "";
+}
+
+/**
+ * Whether anything more can be said. A goodbye from either side is the end, even while the
+ * process lingers a moment so the other side can read it: a line written then would be queued
+ * behind the goodbye and never go.
+ */
+function over(conversation: Conversation): boolean {
+  return (
+    conversation.done ||
+    conversation.entries.some((entry) => entry.state === "bye" || entry.state === "expired" || (entry.side === "peer" && entry.state === "gone"))
+  );
+}
+
+/**
+ * What happened to the line a tool call just queued — its own line, not merely the next one
+ * written: an agent that calls `say` several times at once must not be told each of them arrived
+ * when only the first has. While the relay is holding this side back, the answer is that it is
+ * queued, which is true and is all there is to know for now.
+ */
+async function settle(conversation: Conversation, from: number, mine: (entry: LogEntry) => boolean, ms: number): Promise<LogEntry | undefined> {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    const found = conversation.entries.slice(from).find((entry) => entry.side === "local" && mine(entry));
+    if (found) return found;
+    const held = holding(conversation);
+    if (held) return held;
+    if (conversation.done || Date.now() > deadline) return undefined;
+    await delay(50);
+  }
+}
+
+/** The throttle note, while lines are still waiting behind it. */
+function holding(conversation: Conversation): LogEntry | undefined {
+  for (let i = conversation.entries.length - 1; i >= 0; i--) {
+    const entry = conversation.entries[i]!;
+    if (entry.side !== "local") continue;
+    if (entry.state === "throttled") return entry;
+    if (["say", "confirm", "working", "files"].includes(entry.state)) return undefined;
+  }
+  return undefined;
+}
+
+/** Whether an `undelivered` line is this one. Long lines are written down shortened. */
+function unsentAs(entry: LogEntry, line: string): boolean {
+  return entry.text === line || entry.text.startsWith(`${line}（`) || entry.text.startsWith(brief(line));
 }
 
 /** Wait for an entry after `from` that satisfies `match`, or for the conversation to end. */

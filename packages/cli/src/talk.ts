@@ -24,6 +24,11 @@ export class Talk {
     return this.events.filter((event) => event.seq > seq);
   }
 
+  /** The seq of the newest line, or 0. */
+  latest(): number {
+    return this.seq;
+  }
+
   push(input: { id: string; from: Side; text: string; files: SessionFile[] }): SessionEvent {
     const row: SessionEvent = { seq: ++this.seq, at: new Date().toISOString(), ...input };
     this.events.push(row);

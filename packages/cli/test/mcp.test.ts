@@ -156,4 +156,60 @@ describe("agenthop as an MCP server", () => {
     expect(nothing.isError).toBe(true);
     await relay.close();
   });
+
+  it("keeps a file's name as it was written, and treats a goodbye as the end at once", async () => {
+    const { relay, creator, joiner } = await room();
+    const created = await creator.call("agenthop_create", { background: "传个文件" });
+    const code = created.text.match(/\d{4}-[a-z]+-[a-z]+-[a-z]+-[a-z2-7]{26}/)?.[0];
+    await joiner.call("agenthop_join", { code, accept_files: true });
+    await joiner.call("agenthop_say", { text: "好" });
+    await creator.call("agenthop_wait", { timeout_seconds: 10 });
+
+    const dir = await mkdtemp(path.join(tmpdir(), "agenthop-mcp-name-"));
+    const file = path.join(dir, "报告 v2（终稿）.txt");
+    await writeFile(file, "终稿");
+    await creator.call("agenthop_send_file", { path: file });
+    const got = await joiner.call("agenthop_wait", { timeout_seconds: 10 });
+    const saved = got.text.match(/对方 files：(.+\.txt)/)?.[1];
+    expect(saved && path.basename(saved), got.text).toBe("报告 v2（终稿）.txt");
+    expect(await readFile(saved!, "utf8")).toBe("终稿");
+
+    // Refused by the tool already; the next wait does not tell it again.
+    const over = await joiner.call("agenthop_say", { text: "x".repeat(64 * 1024 + 1) });
+    expect(over.isError).toBe(true);
+    await joiner.call("agenthop_say", { text: "下一句" });
+    expect((await creator.call("agenthop_wait", { timeout_seconds: 10 })).text).toContain("下一句");
+    await creator.call("agenthop_say", { text: "收到" });
+    expect((await joiner.call("agenthop_wait", { timeout_seconds: 10 })).text).not.toContain("undelivered");
+
+    await joiner.call("agenthop_bye", { text: "走了" });
+    await creator.call("agenthop_wait", { timeout_seconds: 10 });
+    // The creator lingers a moment after answering, so the joiner can read it. A line written
+    // then would never go; it is refused rather than accepted into a queue nobody drains.
+    const late = await creator.call("agenthop_say", { text: "还在吗" });
+    expect(late.isError).toBe(true);
+    expect(late.text).toContain("已经结束");
+    await relay.close();
+  });
+
+  it("answers each of several calls made at once about its own line", async () => {
+    const { relay, creator, joiner } = await room();
+    const created = await creator.call("agenthop_create", { background: "一起发" });
+    const code = created.text.match(/\d{4}-[a-z]+-[a-z]+-[a-z]+-[a-z2-7]{26}/)?.[0];
+    await joiner.call("agenthop_join", { code });
+    await joiner.call("agenthop_say", { text: "好" });
+    await creator.call("agenthop_wait", { timeout_seconds: 10 });
+
+    // Harnesses run tool calls in parallel. "Delivered" has to mean this line was delivered.
+    // The one in the middle cannot go; answering it with the first line's outcome said it did.
+    const texts = ["并发第 1 句", "并发第 2 句", "x".repeat(64 * 1024 + 1), "并发第 4 句", "并发第 5 句"];
+    const replies = await Promise.all(texts.map((text) => joiner.call("agenthop_say", { text })));
+    expect(replies.map((r) => r.isError)).toEqual([false, false, true, false, false]);
+    expect(replies[2]!.text).toContain("超过单条 64 KiB");
+    expect(replies.filter((r) => !r.isError).every((r) => r.text.includes("已送达"))).toBe(true);
+    let heard = "";
+    for (let i = 0; i < 10 && !heard.includes("并发第 5 句"); i++) heard += (await creator.call("agenthop_wait", { timeout_seconds: 5 })).text;
+    expect([...heard.matchAll(/并发第 (\d) 句/g)].map((m) => m[1])).toEqual(["1", "2", "4", "5"]);
+    await relay.close();
+  });
 });

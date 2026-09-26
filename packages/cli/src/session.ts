@@ -33,8 +33,13 @@ const REFUSE_NOT_INVITED = "这个房间是为邀请开的，加入的不是被�
 
 const LOCAL_POLL_MS = 200;
 const RELAY_POLL_MS = 1000;
-/** After answering a goodbye the room stays open this long, so the other side can still read it. */
-const LINGER_MS = 2000;
+/**
+ * After a goodbye the room stays open until the other side has been handed it, at most this
+ * long. A fixed two seconds was not enough over a real relay: a joiner whose goodbye took 1.4
+ * seconds to post read the room again after it had closed, missed the answer, and wrote the
+ * other side off as gone.
+ */
+const HANDOVER_MS = 10_000;
 /** How long the side that said goodbye first waits for the other one to say it back. */
 const BYE_WAIT_MS = 10_000;
 /** How often to try again once the relay has said this room is sending too fast. Refused tries are not counted against it. */
@@ -189,7 +194,7 @@ async function hostConversation(
   try {
     for (;;) {
       if (options.signal?.aborted) {
-        await farewell(say, out, log, phase === "ready" && !saidBye, LINGER_MS, undefined);
+        await farewell(say, out, log, phase === "ready" && !saidBye, () => handOver(host), undefined);
         return;
       }
       if (lost) {
@@ -212,8 +217,8 @@ async function hostConversation(
           out.reportUnsent();
           if (saidBye) return;
           if (!(await answerBye(() => say(byeWire()), log))) return;
-          // The other side reads the room over the relay, so keep it open long enough to be read.
-          await delay(LINGER_MS);
+          // The other side reads the room over the relay, so keep it open until it has read this.
+          await handOver(host);
           return;
         }
         if (phase === "wait-connect" && wire.kind === "connect") {
@@ -299,7 +304,7 @@ async function joinConversation(options: SessionOptions, home: string, code: str
   for (;;) {
     if (options.signal?.aborted) {
       reportUnsent();
-      await farewell(send, out, log, phase === "ready" && !saidBye, 0, id);
+      await farewell(send, out, log, phase === "ready" && !saidBye, undefined, id);
       return;
     }
     let events: SessionEvent[];
@@ -512,13 +517,21 @@ async function answerBye(send: () => Promise<unknown>, logFile: string): Promise
   return true;
 }
 
+/** Keep the room open until the reader over the relay has been given everything in it. */
+async function handOver(host: RunningHost): Promise<void> {
+  const deadline = Date.now() + HANDOVER_MS;
+  while (!host.handedOver() && Date.now() < deadline) await delay(100);
+  // The answer is on its way through the relay; give it a moment to get there before the socket closes.
+  await delay(300);
+}
+
 /** Ctrl-C still owes the other side a goodbye. */
 async function farewell(
   send: (wire: string) => Promise<unknown>,
   out: Outbox,
   logFile: string,
   owed: boolean,
-  linger: number,
+  linger: (() => Promise<void>) | undefined,
   // The joining side signs its lines, and an unsigned goodbye is one the creator turns away —
   // so a Ctrl-C used to leave the other side waiting out the clock for a bye that was sent.
   id: string | undefined,
@@ -528,7 +541,7 @@ async function farewell(
   try {
     await send(byeWire(id));
     write(logFile, "local", "bye");
-    if (linger) await delay(linger);
+    if (linger) await linger();
   } catch {
     write(logFile, "local", "undelivered", BYE);
   }

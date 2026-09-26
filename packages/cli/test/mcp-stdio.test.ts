@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, writeFile } from "node:fs/promises";
+import { connect, createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -170,6 +171,54 @@ describe("agenthop mcp as a process", () => {
       const exited = new Promise<number | null>((resolve) => bob.child.once("exit", resolve));
       bob.child.stdin.end();
       expect(await Promise.race([exited, new Promise((resolve) => setTimeout(() => resolve("still running"), 5_000))])).toBe(0);
+    },
+    120_000,
+  );
+
+  it(
+    "lives through its connection to the relay being reset",
+    async () => {
+      // The compiled binary died here: a reset raised a socket error nobody was listening for.
+      // Run with AGENTHOP_BIN to check the binary rather than the source.
+      const relay = await startRelay();
+      relays.push(relay);
+      const { port } = new URL(relay.url);
+      const sockets = new Set<Socket>();
+      const proxy = createServer((client) => {
+        const upstream = connect(Number(port), "127.0.0.1");
+        for (const socket of [client, upstream]) {
+          sockets.add(socket);
+          socket.on("error", () => undefined);
+          socket.on("close", () => sockets.delete(socket));
+        }
+        client.pipe(upstream).pipe(client);
+      });
+      await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", () => resolve()));
+      const proxyUrl = `http://127.0.0.1:${(proxy.address() as { port: number }).port}`;
+      const dir = await mkdtemp(path.join(tmpdir(), "agenthop-mcp-reset-"));
+      const creator = server(proxyUrl, path.join(dir, "creator"));
+      const joiner = server(proxyUrl, path.join(dir, "joiner"));
+      await Promise.all([creator.start(), joiner.start()]);
+      const code = (await creator.call("agenthop_create", { background: "会断一下" })).match(/\d{4}-[a-z]+-[a-z]+-[a-z]+-[a-z2-7]{26}/)?.[0];
+      await joiner.call("agenthop_join", { code });
+      await joiner.call("agenthop_say", { text: "确认" });
+      await creator.call("agenthop_wait", { timeout_seconds: 15 });
+
+      // Gone for a few seconds, as a relay being restarted is: every try to reopen the room in
+      // that time is refused outright, and each refusal is another socket error.
+      const proxyPort = (proxy.address() as { port: number }).port;
+      proxy.close();
+      for (const socket of sockets) socket.resetAndDestroy();
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      await new Promise<void>((resolve) => proxy.listen(proxyPort, "127.0.0.1", () => resolve()));
+      let heard = "";
+      for (let i = 0; i < 6 && !heard.includes("reconnected"); i++) heard += await creator.call("agenthop_wait", { timeout_seconds: 5 });
+      expect(heard).toContain("reconnected");
+      expect(creator.child.exitCode).toBe(null);
+      await joiner.call("agenthop_say", { text: "断过之后" });
+      expect(await creator.call("agenthop_wait", { timeout_seconds: 15 })).toContain("断过之后");
+      for (const socket of sockets) socket.destroy();
+      proxy.close();
     },
     120_000,
   );

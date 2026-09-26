@@ -101,10 +101,26 @@ export function messageFromParts(parts: readonly Part[] | undefined): HopMessage
   return { text, files };
 }
 
+/**
+ * A name the other side chose, made safe to write under the inbox. It stays as written — a
+ * `报告（终稿）.txt` arrives as that, not as underscores — and loses only what cannot be in a file
+ * name, what would climb out of the folder, and what would drive a terminal or reverse the text
+ * on screen when the path is shown.
+ */
 export function safeName(name: string): string {
-  const base = path.basename(name).replace(/[^A-Za-z0-9._-]/g, "_");
-  if (!base || base === "." || base === "..") return "file";
-  return base;
+  const base = path.posix
+    .basename(name.replace(/\\/g, "/"))
+    .normalize("NFC")
+    .replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069<>:"|?*]/g, "_")
+    .trim()
+    .replace(/[. ]+$/, "");
+  if (!base || /^\.+$/.test(base)) return "file";
+  // Windows will not open a file called CON or NUL, whatever follows the dot.
+  const named = /^(con|prn|aux|nul|com\d|lpt\d)(\.|$)/i.test(base) ? `_${base}` : base;
+  // Most file systems stop at 255 bytes; leave room for a suffix.
+  const chars = Array.from(named);
+  while (Buffer.byteLength(chars.join("")) > 200) chars.pop();
+  return chars.join("");
 }
 
 function asBytes(value: unknown): Uint8Array {

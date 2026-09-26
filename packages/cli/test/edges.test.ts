@@ -1,4 +1,5 @@
 import { mkdtemp } from "node:fs/promises";
+import { createServer, connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -28,7 +29,73 @@ async function room() {
   return { dir, relay };
 }
 
+/**
+ * A TCP proxy in front of the relay that can cut every connection the hard way — a reset, not a
+ * polite close — which is what a relay being killed or a network dropping looks like from here.
+ */
+async function resettableProxy(target: string) {
+  const { hostname, port } = new URL(target);
+  const sockets = new Set<Socket>();
+  const server = createServer((client) => {
+    const upstream = connect(Number(port), hostname);
+    for (const socket of [client, upstream]) {
+      sockets.add(socket);
+      socket.on("error", () => undefined);
+      socket.on("close", () => sockets.delete(socket));
+    }
+    client.pipe(upstream).pipe(client);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const address = server.address() as { port: number };
+  return {
+    url: `http://127.0.0.1:${address.port}`,
+    reset: () => {
+      for (const socket of sockets) socket.resetAndDestroy();
+    },
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  };
+}
+
+describe("the relay going away hard", () => {
+  it("survives its connection to the relay being reset, and carries on", async () => {
+    const { dir, relay } = await room();
+    const proxy = await resettableProxy(relay.url);
+    const p = await pair(proxy.url, dir);
+    proxy.reset();
+    await waitForText(p.creatorHome, "local reconnected", 30_000);
+    p.joinerLines.push("断过之后的一句");
+    await waitForText(p.creatorHome, "peer say 断过之后的一句", 30_000);
+    p.creatorLines.push("/bye");
+    await Promise.all([p.creator, p.joiner]);
+    await proxy.close();
+    await relay.close();
+  }, 60_000);
+});
+
 describe("goodbyes at the edges", () => {
+  it("keeps the room open until a slow joiner has read the answer to its goodbye", async () => {
+    const { dir, relay } = await room();
+    const p = await pair(relay.url, dir);
+    // A real relay, far away: every request the joining side makes takes a while to get there.
+    // With a fixed two-second linger the creator closed the room before the joiner's next read.
+    const direct = globalThis.fetch;
+    globalThis.fetch = async (input, init) => {
+      if (String(input instanceof Request ? input.url : input).includes("/r/")) await new Promise((resolve) => setTimeout(resolve, 2500));
+      return direct(input, init);
+    };
+    try {
+      p.joinerLines.push("/bye 先走了");
+      await Promise.all([p.creator, p.joiner]);
+    } finally {
+      globalThis.fetch = direct;
+    }
+    const joiner = await p.log("joiner");
+    expect(joiner).toContain("peer bye");
+    expect(joiner).not.toContain("reconnecting");
+    expect(joiner).not.toContain("peer gone");
+    await relay.close();
+  }, 60_000);
+
   it("ends the conversation on /bye with a parting word, and carries the word", async () => {
     const { dir, relay } = await room();
     const p = await pair(relay.url, dir);
