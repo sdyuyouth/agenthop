@@ -98,7 +98,10 @@ describe("node relay", () => {
     await connectHost(relay.url, code);
 
     let refused = 0;
-    for (let i = 0; i < 70; i++) {
+    // The counter runs on wall-clock minutes. Seventy posts that straddle a minute boundary split
+    // into two windows and neither passes sixty, so the flood has to be big enough that any split
+    // still leaves one window over the limit.
+    for (let i = 0; i < 130; i++) {
       const response = await fetch(`${relay.url}/r/${code}/`, { method: "POST", body: "hi" });
       if (response.status === 429) refused++;
       await response.arrayBuffer();
