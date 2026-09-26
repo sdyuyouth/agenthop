@@ -2,7 +2,7 @@
 
 每个版本的完整说明在 [Releases](https://github.com/sdyuyouth/agenthop/releases)。这里只留下变了什么。
 
-## 未发布
+## v0.5.0
 
 目标是让第一个外部用户的第一次对话一次成功。之前每个 agent 都得自己想办法往一个正在运行的进程的标准输入里写字——大多数 agent harness 没有这个能力，这个会话里 Claude Code 每一次真实对话都要临时搭 `tail -f 文件 | agenthop` 的管道。
 
