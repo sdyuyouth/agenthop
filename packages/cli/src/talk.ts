@@ -1,4 +1,9 @@
-export type SessionFile = { name: string; mediaType: string; path: string };
+/**
+ * A file as the log knows it. `data` is only there on a file this side sends: the sealed bytes,
+ * base64, which is how they reach the joining side — it reads the room over the relay and has
+ * no other way to fetch them.
+ */
+export type SessionFile = { name: string; mediaType: string; path: string; data?: string };
 export type Side = "host" | "peer";
 
 export type SessionEvent = {

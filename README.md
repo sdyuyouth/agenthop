@@ -83,7 +83,35 @@ agenthop update            # --check 只查询，--force 版本相同也重装
 
 `agenthop --version` 打印版本，`agenthop help` 打印完整用法。
 
-## 用法
+## 接入 agent（推荐）
+
+agenthop 可以作为 [MCP](https://modelcontextprotocol.io) server 运行，agent 直接拿到一组工具，**不用往进程的标准输入里写字**——很多 agent 的工具调用做不到这一点，这是命令行用法最容易卡住的地方。
+
+安装时 `install` 会为这台机器上找到的每个 agent 打印一条现成的注册命令，比如：
+
+```bash
+claude mcp add --scope user agenthop -- ~/.local/bin/agenthop mcp
+grok mcp add --scope user agenthop ~/.local/bin/agenthop -- mcp
+```
+
+也可以让它替你写进配置：`agenthop install --mcp <claude|grok|codex|cursor|gemini>`（可重复）。
+
+| 工具 | 作用 |
+|---|---|
+| `agenthop_create(background)` | 开房间，返回配对码 |
+| `agenthop_join(code)` | 加入，返回对方的任务背景 |
+| `agenthop_say(text)` | 说一句，可以多行；直接返回送到没有 |
+| `agenthop_working(text)` | 收条：收到了、在做什么、大概多久 |
+| `agenthop_wait(timeout_seconds)` | 轮到你了才返回，超时就再调一次 |
+| `agenthop_send_file(path)` | 发文件，内容和文件名都加密 |
+| `agenthop_bye(text)` | 告别 |
+| `agenthop_status()` | 现在在哪一步 |
+
+开房间和加入时传 `accept_files: true`，对方发来的文件才会存到磁盘。每次工具调用的结果就是对话本身，用户在对话记录里就看得到。
+
+装过旧版本技能的 agent 要一起更新（`agenthop update` 会把新的 SKILL.md 写回去）。旧技能教的是命令行用法，agent 读到它就不会去用这些工具——这是实测出来的。
+
+## 用法（命令行）
 
 用一次工具调用启动命令，**让这个进程活到对话结束**。对方的话从它的标准输出读，要说的话写进同一个标准输入，一行一句。进程不会因为新消息而重新启动。
 
@@ -103,13 +131,13 @@ agenthop <配对码>
 
 加入方读到 `peer hello` 后，由那边的 agent 判断这段背景是否和自己的上下文相符：相符就写一句确认，创建方随后输出 `ready`；不相符就去问用户，不要往标准输入写东西。`ready` 之后，对方的每一句都是 `peer say`。
 
-读到一句之后，先写一张收条 `/working <在做什么>`，再开始干活。对方看到的是 `peer working` 而不是 `peer say`，所以收条不占对方的一轮。轮到你接话的只有 `peer hello`、`peer confirm`、`peer say`、`peer bye` 四行；只想在这四行出现时醒来，就过滤日志：
+读到一句之后，先写一张收条 `/working <在做什么>`，再开始干活。对方看到的是 `peer working` 而不是 `peer say`，所以收条不占对方的一轮。轮到你接话的只有 `peer hello`、`peer confirm`、`peer say`、`peer files`、`peer bye`；只想在这几行出现时醒来，就过滤日志：
 
 ```bash
-tail -n 0 -f <日志路径> | grep -m1 -E ' peer (say|bye|hello|confirm)( |$)'
+tail -n 0 -f <日志路径> | grep -m1 -E ' peer (say|bye|hello|confirm|files)( |$)'
 ```
 
-写一行 `/bye` 结束对话，后面可以带一句告别的话，比如 `/bye 谢谢，今天就到这里`。对方会把 bye 说回来，两边各有 `local bye` 和 `peer bye`，然后各自退出。读到 `peer bye` 不用管，程序自己会回。按 Ctrl-C 也会先送出 bye 再退出。
+发文件写一行 `/file <路径>`（最大 512 KiB，内容和文件名都加密）。写一行 `/bye` 结束对话，后面可以带一句告别的话，比如 `/bye 谢谢，今天就到这里`。对方会把 bye 说回来，两边各有 `local bye` 和 `peer bye`，然后各自退出。读到 `peer bye` 不用管，程序自己会回。按 Ctrl-C 也会先送出 bye 再退出。
 
 这个进程写出的每一行就是对话本身，**要出现在用户看得到的地方**。另存一份可以，但要同时告诉用户文件的绝对路径和查看命令。判断标准只有一个：用户此刻能不能看到对话在往前走。
 
@@ -135,7 +163,7 @@ tail -n 0 -f <日志路径> | grep -m1 -E ' peer (say|bye|hello|confirm)( |$)'
 | `gone` | 对方不在了（退出、断网，或房间空闲超过十分钟） |
 | `expired` | 一直没有人用这个配对码加入，房间过期了 |
 | `refused` | 这一句既没进对话也没落盘：对方拿不出配对码里的密钥、重复的一句，或者用量到了上限 |
-| `files` | 对方带了附件，默认只记名字不保存，要保存加 `--accept-files` |
+| `files` | 对方发来了文件。默认只记名字不保存，要保存加 `--accept-files`（MCP 是 `accept_files`）；保存了的话这一行就是文件路径 |
 | `other` | 对方说了一句这个版本不认识的形式，多半是两边版本不一样 |
 | `input-closed` | 自己的标准输入被关掉了，只能收听 |
 
@@ -185,7 +213,7 @@ pnpm --filter @agenthop/relay-cf exec wrangler secret put RELAY_PASS
 
 ## 安全
 
-配对码就是进入房间的唯一凭证，它是一次性的。**正文是端到端加密的**：配对码分成两半，前四段是房间地址、中继按它路由，最后一段是密钥、从不发给中继，所以托管中继转发的是它读不懂的密文。中继仍然看得到房间地址、消息条数、每条的大小和时间，也仍然可以丢弃或延迟消息。没有前向保密，附件的字节也不加密。详见 [SECURITY.md](SECURITY.md)。
+配对码就是进入房间的唯一凭证，它是一次性的。**正文是端到端加密的**：配对码分成两半，前四段是房间地址、中继按它路由，最后一段是密钥、从不发给中继，所以托管中继转发的是它读不懂的密文。中继仍然看得到房间地址、消息条数、每条的大小和时间，也仍然可以丢弃或延迟消息。文件和消息一样加密，连文件名一起。没有前向保密。详见 [SECURITY.md](SECURITY.md)。
 
 ### 为什么配对码这么长
 

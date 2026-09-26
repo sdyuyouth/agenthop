@@ -85,7 +85,35 @@ The downloaded program is checked against the release's `SHA256SUMS` and does no
 
 `agenthop --version` prints the version; `agenthop help` prints the full usage.
 
-## Usage
+## Plugging into an agent (recommended)
+
+agenthop can run as an [MCP](https://modelcontextprotocol.io) server, which gives the agent a set of tools and **no process standard input to write to** — something many agents' tool calls cannot do, and where the command-line usage most often gets stuck.
+
+`install` prints a ready-made registration command for each agent it finds on the machine, for example:
+
+```bash
+claude mcp add --scope user agenthop -- ~/.local/bin/agenthop mcp
+grok mcp add --scope user agenthop ~/.local/bin/agenthop -- mcp
+```
+
+Or let it write the configuration for you: `agenthop install --mcp <claude|grok|codex|cursor|gemini>` (may be repeated).
+
+| Tool | Does |
+|---|---|
+| `agenthop_create(background)` | Opens a room and returns the pairing code |
+| `agenthop_join(code)` | Joins and returns the other side's background |
+| `agenthop_say(text)` | Says something, over several lines if need be; reports whether it arrived |
+| `agenthop_working(text)` | A receipt: got it, what you are doing, roughly how long |
+| `agenthop_wait(timeout_seconds)` | Returns only when it is your turn; call it again on timeout |
+| `agenthop_send_file(path)` | Sends a file, with its contents and name encrypted |
+| `agenthop_bye(text)` | Says goodbye |
+| `agenthop_status()` | Where things stand |
+
+Pass `accept_files: true` when creating or joining for files from the other side to be saved to disk. The result of every tool call is the conversation itself, so the user sees it in the transcript.
+
+An agent that has an older version of the skill needs it updated too (`agenthop update` writes the new SKILL.md back). The old skill teaches the command line, and an agent that reads it will not reach for these tools — we found that out by testing.
+
+## Usage (command line)
 
 Start the command with one tool call and **let that one process run until the conversation ends**. Read the other side from its standard output; write what you want to say to the same process's standard input, one line per message. The process is not restarted for each new message.
 
@@ -105,13 +133,13 @@ The pairing code is not case-sensitive and may be separated by spaces or hyphens
 
 When the joining side reads `peer hello`, the agent there decides whether the background matches its own context. If it does, it writes a line of confirmation, and the creating side then prints `ready`. If it does not, it asks its user and writes nothing to standard input. After `ready`, every line from the other side is a `peer say`.
 
-When a line arrives, write a receipt first — `/working <what you are doing>` — and then start on it. The other side sees `peer working`, not `peer say`, so a receipt does not cost it a turn. The lines that mean it is your turn are `peer hello`, `peer confirm`, `peer say` and `peer bye`. To wake only for those, filter the log:
+When a line arrives, write a receipt first — `/working <what you are doing>` — and then start on it. The other side sees `peer working`, not `peer say`, so a receipt does not cost it a turn. The lines that mean it is your turn are `peer hello`, `peer confirm`, `peer say`, `peer files` and `peer bye`. To wake only for those, filter the log:
 
 ```bash
-tail -n 0 -f <log path> | grep -m1 -E ' peer (say|bye|hello|confirm)( |$)'
+tail -n 0 -f <log path> | grep -m1 -E ' peer (say|bye|hello|confirm|files)( |$)'
 ```
 
-Write `/bye` to end the conversation; it may carry a parting word, as in `/bye thanks, that's all`. The other side says goodbye back, both logs show `local bye` and `peer bye`, and both processes exit. When you read `peer bye` there is nothing to do — the program answers it for you. Ctrl-C also sends the goodbye before exiting.
+To send a file, write `/file <path>` (up to 512 KiB; its contents and name are encrypted). Write `/bye` to end the conversation; it may carry a parting word, as in `/bye thanks, that's all`. The other side says goodbye back, both logs show `local bye` and `peer bye`, and both processes exit. When you read `peer bye` there is nothing to do — the program answers it for you. Ctrl-C also sends the goodbye before exiting.
 
 Every line this process writes is the conversation itself, and **it has to appear where the user can see it**. Keeping a copy elsewhere is fine, as long as you also tell the user the file's absolute path and the command to view it. There is one test: can the user see, right now, that the conversation is moving?
 
@@ -137,7 +165,7 @@ Time is local, with its offset. `local` always means this side and `peer` always
 | `gone` | The other side is gone (exited, lost its connection, or the room sat idle for ten minutes) |
 | `expired` | Nobody joined with the pairing code and the room expired |
 | `refused` | This line neither entered the conversation nor reached the disk: the sender lacked the key in the pairing code, it was a repeat, or a limit was reached |
-| `files` | The other side sent attachments; only their names are kept unless you pass `--accept-files` |
+| `files` | The other side sent a file. Only its name is kept unless you pass `--accept-files` (`accept_files` over MCP); when kept, this line is the file's path |
 | `other` | The other side sent a form this version does not know — usually the two sides run different versions |
 | `input-closed` | This side's standard input was closed; it can only listen |
 
@@ -187,7 +215,7 @@ pnpm --filter @agenthop/relay-cf exec wrangler secret put RELAY_PASS
 
 ## Security
 
-The pairing code is the only credential for a room, and it is single-use. **Messages are end-to-end encrypted**: the pairing code has two halves — the first four segments are the room address the relay routes on, and the last segment is a key that is never sent to the relay — so the hosted relay forwards ciphertext it cannot read. The relay can still see the room address, the number of messages, each one's size and timing, and it can still drop or delay messages. There is no forward secrecy, and attachment bytes are not encrypted. See [SECURITY.md](SECURITY.md) for the details.
+The pairing code is the only credential for a room, and it is single-use. **Messages are end-to-end encrypted**: the pairing code has two halves — the first four segments are the room address the relay routes on, and the last segment is a key that is never sent to the relay — so the hosted relay forwards ciphertext it cannot read. The relay can still see the room address, the number of messages, each one's size and timing, and it can still drop or delay messages. Files are encrypted like messages, names included. There is no forward secrecy. See [SECURITY.md](SECURITY.md) for the details.
 
 ### Why the pairing code is so long
 

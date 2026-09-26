@@ -17,6 +17,10 @@ export class SealError extends Error {}
 
 const PREFIX = "[[agenthop:sealed]] ";
 const AAD = Buffer.from("agenthop-sealed-v1");
+/** A file's bytes are sealed apart from its line, under their own label, so one cannot pass for the other. */
+const FILE_AAD = Buffer.from("agenthop-file-v1");
+/** How a sealed file travels. Its real name and type are inside the sealed line that announces it. */
+export const SEALED_TYPE = "application/vnd.agenthop.sealed";
 const NONCE_BYTES = 12;
 const TAG_BYTES = 16;
 const COUNTER_BYTES = 4;
@@ -30,6 +34,10 @@ export type Channel = {
   open(text: string): Opened;
   /** Whether this counter is newer than every one seen before. Stateful, unlike `open`. */
   fresh(counter: number): boolean;
+  /** Seal a file's bytes. Nothing ties them to a line but the hash the line carries. */
+  sealBytes(bytes: Uint8Array): Buffer;
+  /** Open a file's bytes. Pure, like `open`; throws SealError. */
+  openBytes(bytes: Uint8Array): Buffer;
 };
 
 export function deriveKeys(code: string, seat: Seat): { tx: Buffer; rx: Buffer } {
@@ -71,6 +79,25 @@ export function channel(code: string, seat: Seat): Channel {
         throw new SealError("bad_seal");
       }
       return { counter: plain.readUInt32BE(0), wire: plain.subarray(COUNTER_BYTES).toString("utf8") };
+    },
+    sealBytes(bytes: Uint8Array): Buffer {
+      const nonce = randomBytes(NONCE_BYTES);
+      const cipher = createCipheriv("aes-256-gcm", tx, nonce);
+      cipher.setAAD(FILE_AAD);
+      const body = Buffer.concat([cipher.update(bytes), cipher.final()]);
+      return Buffer.concat([nonce, body, cipher.getAuthTag()]);
+    },
+    openBytes(bytes: Uint8Array): Buffer {
+      const raw = Buffer.from(bytes);
+      if (raw.byteLength < NONCE_BYTES + TAG_BYTES) throw new SealError("too_short");
+      const decipher = createDecipheriv("aes-256-gcm", rx, raw.subarray(0, NONCE_BYTES));
+      decipher.setAAD(FILE_AAD);
+      decipher.setAuthTag(raw.subarray(raw.byteLength - TAG_BYTES));
+      try {
+        return Buffer.concat([decipher.update(raw.subarray(NONCE_BYTES, raw.byteLength - TAG_BYTES)), decipher.final()]);
+      } catch {
+        throw new SealError("bad_seal");
+      }
     },
     fresh(counter: number): boolean {
       // Strictly increasing, not consecutive: a send that fails spends a counter and is written

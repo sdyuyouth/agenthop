@@ -2,14 +2,33 @@
 name: agenthop
 description: >-
   让两个不在同一台机器上的 agent 交换信息。用户要配对、收到配对码，或运行 /agenthop 时使用。
-  用当前会话的一次工具调用启动 agenthop，让这个进程活到对话结束：对方的话从它的标准输出读，
-  回复写进同一个标准输入。这个进程的输出就是对话本身，要让用户看得到。
+  能调用 agenthop_create / agenthop_join 这些工具时就用工具，整个流程都在工具里；
+  没有这些工具时，才用命令行启动 agenthop，让那个进程活到对话结束。对话要让用户看得到。
 user-invocable: true
 ---
 
 # agenthop
 
-## 一条规则
+## 先看有没有 agenthop 工具
+
+能调用 `agenthop_create`、`agenthop_join` 这些工具，**就用工具，不要再去启动命令行**。工具覆盖整个流程：不用往任何进程的标准输入写字，也不用自己盯日志。用法在下面"用工具"那一节。
+
+没有这些工具时，才用"用命令行"那一节的方式。要让 agent 有这些工具，见"安装"一节最后。
+
+## 用工具
+
+- **开房间**：`agenthop_create(background)`，返回配对码。把配对码**整串**交给用户，由用户转给对方。
+- **加入**：`agenthop_join(code)`，返回对方的任务背景。判断它和你的上下文是否相符：相符就用 `agenthop_say` 写一句确认，通道随即打开；不相符就问用户，不要回复。
+- **等对方**：`agenthop_wait`。只在轮到你时返回（对方说了话、发来文件、确认了、或告别了），超时没等到就再调一次。返回里也有对方的进度（`working`）。
+- **回复**：收到一句，先 `agenthop_working` 回一张收条（在做什么、大概多久），再开始干活；想好了用 `agenthop_say` 回复，可以多行。`say` 会直接告诉你送到没有。
+- **发文件**：`agenthop_send_file(path)`，最大 512 KiB，内容和文件名都加密。对方要在开房间或加入时传了 `accept_files: true` 才存到磁盘，否则只记文件名。
+- **结束**：`agenthop_bye`，可以带一句告别的话。
+
+对方一次说了好几句时，把它们一起答掉，不要只答第一句。
+
+每次工具调用的结果就是对话本身，用户在对话记录里就看得到。开房间和加入时还会给出日志文件的路径。
+
+## 用命令行
 
 用一次工具调用启动 `agenthop`，让这个进程活到对话结束。对方的话从它的标准输出读，要说的话写进同一个标准输入，一行一句。
 
@@ -42,6 +61,8 @@ Windows 的命令装到 `%LOCALAPPDATA%\agenthop\agenthop.exe`。新开一个终
 
 `agenthop --version` 看当前版本，`agenthop help` 看完整用法。
 
+安装时会打印把 agenthop 接成 MCP 工具的办法——每个找到的 agent 一条现成的命令。`agenthop install --mcp <claude|grok|codex|cursor|gemini>` 让它替你写进那个 agent 的配置。接上之后 agent 就有了 `agenthop_*` 工具。
+
 ## 对话
 
 创建房间。后面的文字是本方任务背景，作为 hello 发给对方：
@@ -62,18 +83,18 @@ agenthop <配对码>
 
 `ready` 之后，对方每说一句，同一个进程就再写出一行 `peer say`。读到后把回复写进标准输入。送出后会再出现一行 `local say`，那是自己刚说过的话的记录。
 
-标准输入的每一行就是要送出的正文，不加状态名，不加 JSON。
+标准输入的每一行就是要送出的正文，不加状态名，不加 JSON。发文件写一行 `/file <路径>`（最大 512 KiB，内容和文件名都加密）。
 
 ### 什么时候该接话
 
-只有这四行是"轮到你了"：`peer hello`、`peer confirm`、`peer say`、`peer bye`。
+只有这几行是"轮到你了"：`peer hello`、`peer confirm`、`peer say`、`peer files`、`peer bye`。
 
 `peer working` 是对方在干活的进度，**不要为它起一轮**——它存在的意义就是让你知道可以安心等着。`local` 开头的都是自己的记录，同样不用回应。
 
 程序不提供输出过滤的开关：标准输出永远是完整的一份，因为整个过程要让用户看得见。要只在轮到自己时醒来，就从日志的当前末尾开始等：
 
 ```bash
-tail -n 0 -f <日志路径> | grep -m1 -E ' peer (say|bye|hello|confirm)( |$)'
+tail -n 0 -f <日志路径> | grep -m1 -E ' peer (say|bye|hello|confirm|files)( |$)'
 ```
 
 `-n 0` 表示从末尾开始，不回放已经看过的行。结尾的 `( |$)` 不能省——`peer bye` 后面没有正文，少了它就等不到对方的告别。
@@ -112,7 +133,7 @@ tail -n 0 -f <日志路径> | grep -m1 -E ' peer (say|bye|hello|confirm)( |$)'
 - `peer gone`：对方不在了（进程退出、网络断了、或者房间空闲超过十分钟）。
 - `local expired`：一直没有人用这个配对码加入，房间过期了。要重新执行 `agenthop "<任务背景>"` 拿一个新配对码。
 - `peer refused`：这一句没有进入对话，也没有落到磁盘上。原因写在同一行：对方拿不出配对码里的密钥、同一句被重复送了一次，或者这次会话的用量到了上限（总量 8 MiB、2000 条、单条正文 64 KiB）。
-- `peer files`：对方带了附件。**默认只记名字不保存**，要保存就在启动命令上加 `--accept-files`。
+- `peer files`：对方发来了文件。**默认只记名字不保存**，要保存就在启动命令上加 `--accept-files`（用工具时是 `accept_files: true`）；保存了的话这一行就是文件的路径。
 - `peer other`：对方说了一句这个版本不认识的形式，多半是两边版本不一样。正文照原样截断记下，不用回应。
 - `local input-closed`：标准输入被关掉了，这一方只能收听。
 
@@ -130,7 +151,7 @@ tail -n 0 -f <日志路径> | grep -m1 -E ' peer (say|bye|hello|confirm)( |$)'
 <时间> <local|peer> <状态> <正文>
 ```
 
-状态有 `log`、`waiting`、`connected`、`hello`、`confirm`、`ready`、`say`、`bye`，以及上面那一节里的 `reconnecting`、`reconnected`、`undelivered`、`gone`、`expired`、`refused`、`files`、`input-closed`。`local` 是自己，`peer` 是对方。时间是本机时间，带时区偏移。
+状态有 `log`、`waiting`、`connected`、`hello`、`confirm`、`ready`、`say`、`working`、`bye`，以及上面那一节里的 `reconnecting`、`reconnected`、`undelivered`、`throttled`、`gone`、`expired`、`refused`、`files`、`other`、`input-closed`。`local` 是自己，`peer` 是对方。时间是本机时间，带时区偏移。
 
 ## 中继
 

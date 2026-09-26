@@ -9,7 +9,7 @@ import { addressOf, decodeControl, generateCode, relayEndpoints } from "@agentho
 import express from "express";
 import { WebSocket } from "ws";
 import { HostBridge } from "./bridge.js";
-import { listenControl, Room, type RoomLimits } from "./room.js";
+import { listenControl, Room, type RoomLimits, type RoomOptions } from "./room.js";
 import { type SessionEvent } from "./talk.js";
 import { version } from "./version.js";
 
@@ -29,6 +29,7 @@ export type HostOptions = {
   /** Decides whether an incoming line belongs to this conversation, before anything is kept. */
   accept?: (text: string) => boolean | string;
   onRefused?: (reason: string, text: string) => void;
+  unsealFiles?: RoomOptions["unsealFiles"];
   /** Write incoming attachments to the inbox. Off unless the person asked for it. */
   keepFiles?: boolean;
   limits?: Partial<RoomLimits>;
@@ -63,6 +64,7 @@ export async function startHost(options: HostOptions = {}): Promise<RunningHost>
     onEvent: options.onEvent,
     accept: options.accept,
     onRefused: options.onRefused,
+    unsealFiles: options.unsealFiles,
     keepFiles: options.keepFiles,
     limits: options.limits,
   });
@@ -74,7 +76,7 @@ export async function startHost(options: HostOptions = {}): Promise<RunningHost>
   const card = agentCard(localUrl.url);
   const handler = new DefaultRequestHandler(card, new InMemoryTaskStore(), room.executor());
   app.get("/agenthop/queue", (request, response) => {
-    response.json({ events: room.since(Number(request.query.after ?? 0)) });
+    response.json({ events: room.since(Number(request.query.after ?? 0)).map(overTheRelay) });
   });
   app.use(`/${AGENT_CARD_PATH}`, agentCardHandler({ agentCardProvider: handler }));
   app.use(jsonRpcHandler({ requestHandler: handler, userBuilder: UserBuilder.noAuthentication }));
@@ -174,6 +176,16 @@ export async function startHost(options: HostOptions = {}): Promise<RunningHost>
       await new Promise<void>((resolve, reject) => localUrl.server.close((error) => (error ? reject(error) : resolve())));
     },
   };
+}
+
+/**
+ * An event as anyone holding the room address may read it. The text is sealed already; a file's
+ * name and where it was saved are not, because they were written down after it was opened. Only
+ * a file this side is sending needs to go — as sealed bytes under a name that says nothing.
+ */
+function overTheRelay(event: SessionEvent): SessionEvent {
+  const files = event.from === "host" ? event.files.filter((file) => file.data).map((file) => ({ name: "sealed", mediaType: file.mediaType, path: "", data: file.data })) : [];
+  return { ...event, files };
 }
 
 function withDeadline<T>(work: Promise<T>, ms: number, message: string): Promise<T> {

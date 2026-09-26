@@ -8,7 +8,7 @@ import {
   type ExecutionEventBus,
   type RequestContext,
 } from "@a2a-js/sdk/server";
-import { filesFromPaths, messageFromParts, partsFromMessage, safeName, type HopMessage } from "@agenthop/agent";
+import { filesFromPaths, messageFromParts, partsFromMessage, safeName, type HopFile, type HopMessage } from "@agenthop/agent";
 import { Talk, type SessionEvent, type SessionFile, type Side } from "./talk.js";
 
 /** What one conversation may spend. Anyone holding the code can post, so the room counts. */
@@ -33,6 +33,11 @@ export type RoomOptions = {
   accept?: (text: string) => boolean | string;
   /** Why something was turned away. The session writes it down. */
   onRefused?: (reason: string, text: string) => void;
+  /**
+   * Turn sealed attachments back into files, or say why not. Runs after `accept` and before
+   * anything is written, so a file that will not open never reaches the disk.
+   */
+  unsealFiles?: (text: string, files: HopFile[]) => HopFile[] | string;
   /** Write incoming attachments to the inbox. Off unless the person asked for it. */
   keepFiles?: boolean;
   limits?: Partial<RoomLimits>;
@@ -65,7 +70,7 @@ export class Room {
     return this.talk.since(seq);
   }
 
-  async local(input: { id: string; text: string; files?: string[] }): Promise<SessionEvent> {
+  async local(input: { id: string; text: string; files?: string[]; blobs?: SessionFile[] }): Promise<SessionEvent> {
     const paths = input.files ?? [];
     const loaded = await filesFromPaths(paths);
     const listed = loaded.map((file, index) => ({
@@ -73,7 +78,9 @@ export class Room {
       mediaType: file.mediaType,
       path: path.resolve(paths[index] ?? file.name),
     }));
-    return this.admit({ id: input.id, from: "host", message: { text: input.text, files: loaded }, files: listed });
+    // Sealed bytes this side is sending. They ride on the event so the queue can hand them over.
+    const blobs = (input.blobs ?? []).map((blob) => ({ name: blob.name, mediaType: blob.mediaType, path: "", data: blob.data }));
+    return this.admit({ id: input.id, from: "host", message: { text: input.text, files: loaded }, files: [...listed, ...blobs] });
   }
 
   private async execute(context: RequestContext, bus: ExecutionEventBus): Promise<void> {
@@ -85,8 +92,18 @@ export class Room {
       bus.publish(AgentEvent.task(openTask(context, partsFromMessage({ text: JSON.stringify({ refused: refusal }), files: [] }))));
       return;
     }
-    const files = this.options.keepFiles ? await this.storeFiles(context.taskId, message) : listOnly(message);
-    const event = await this.admit({ id: context.taskId, from: "peer", message, files });
+    let opened = message;
+    if (message.files.length > 0 && this.options.unsealFiles) {
+      const unsealed = this.options.unsealFiles(message.text, message.files);
+      if (typeof unsealed === "string") {
+        this.options.onRefused?.(unsealed, message.text);
+        bus.publish(AgentEvent.task(openTask(context, partsFromMessage({ text: JSON.stringify({ refused: unsealed }), files: [] }))));
+        return;
+      }
+      opened = { ...message, files: unsealed };
+    }
+    const files = this.options.keepFiles ? await this.storeFiles(context.taskId, opened) : listOnly(opened);
+    const event = await this.admit({ id: context.taskId, from: "peer", message: opened, files });
     bus.publish(AgentEvent.task(openTask(context, partsFromMessage({ text: JSON.stringify(event), files: [] }))));
   }
 
@@ -160,9 +177,9 @@ export async function listenControl(room: Room): Promise<{ url: string; close: (
         return;
       }
       if (request.method === "POST" && url.pathname === "/message") {
-        const body = JSON.parse(await readBody(request)) as { id?: string; text?: string; files?: string[] };
+        const body = JSON.parse(await readBody(request)) as { id?: string; text?: string; files?: string[]; blobs?: SessionFile[] };
         if (!body.id) throw new Error("id is required");
-        sendJson(response, await room.local({ id: body.id, text: body.text ?? "", files: body.files }));
+        sendJson(response, await room.local({ id: body.id, text: body.text ?? "", files: body.files, blobs: body.blobs }));
         return;
       }
       response.writeHead(404);

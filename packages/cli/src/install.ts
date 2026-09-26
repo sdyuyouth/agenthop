@@ -15,6 +15,7 @@ import {
 import { homedir, platform } from "node:os";
 import { delimiter, dirname, join, parse, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { mcpHints, registerMcp } from "./agents.js";
 import { skillMarkdown } from "./skill-text.js";
 
 const windows = platform() === "win32";
@@ -24,6 +25,8 @@ export type InstallOptions = {
   skillDirs?: string[];
   /** Only rewrite SKILL.md. `update` uses this to refresh the skill with the new program. */
   skillOnly?: boolean;
+  /** Agents to register agenthop with as an MCP server. Without this it only says how. */
+  mcp?: string[];
 };
 
 /** Copy this program onto PATH and write the skill. No repository and no package install. */
@@ -33,6 +36,14 @@ export function installAgenthop(options: InstallOptions = {}): void {
   const skills = writeSkillFiles(dirs);
   if (command) console.log(command);
   for (const skill of skills) console.log(skill);
+  if (!command) return;
+  if (options.mcp?.length) {
+    for (const line of registerMcp(options.mcp, command)) console.log(line);
+    return;
+  }
+  console.log("\n接入 MCP，agent 就能直接用 agenthop 的工具，不用往进程的标准输入里写字：");
+  for (const line of mcpHints(command)) console.log(line);
+  console.log("  或者让它替你写：agenthop install --mcp <claude|grok|codex|cursor|gemini>");
 }
 
 /**

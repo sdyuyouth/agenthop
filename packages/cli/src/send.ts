@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Role, type Task } from "@a2a-js/sdk";
 import { ClientFactory } from "@a2a-js/sdk/client";
-import { filesFromPaths, messageFromParts, partsFromMessage } from "@agenthop/agent";
+import { filesFromPaths, messageFromParts, partsFromMessage, type HopFile } from "@agenthop/agent";
 import { normalizeCode, relayEndpoints } from "@agenthop/tunnel";
 import { DEFAULT_RELAY } from "./host.js";
 import { type SessionEvent } from "./talk.js";
@@ -10,6 +10,8 @@ export type SendOptions = {
   code: string;
   text: string;
   files?: string[];
+  /** Files already in hand — sealed ones, which never exist on disk as themselves. */
+  attachments?: HopFile[];
   relay?: string;
   pass?: string;
 };
@@ -49,7 +51,7 @@ export async function sendMessage(options: SendOptions): Promise<SessionEvent> {
           contextId: "",
           taskId: "",
           role: Role.ROLE_USER,
-          parts: partsFromMessage({ text: options.text, files: await filesFromPaths(options.files ?? []) }),
+          parts: partsFromMessage({ text: options.text, files: [...(await filesFromPaths(options.files ?? [])), ...(options.attachments ?? [])] }),
           extensions: [],
           metadata: undefined,
           referenceTaskIds: [],

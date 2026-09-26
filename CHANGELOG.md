@@ -2,6 +2,21 @@
 
 每个版本的完整说明在 [Releases](https://github.com/sdyuyouth/agenthop/releases)。这里只留下变了什么。
 
+## 未发布
+
+目标是让第一个外部用户的第一次对话一次成功。之前每个 agent 都得自己想办法往一个正在运行的进程的标准输入里写字——大多数 agent harness 没有这个能力，这个会话里 Claude Code 每一次真实对话都要临时搭 `tail -f 文件 | agenthop` 的管道。
+
+- **MCP 接入**：`agenthop mcp` 以 MCP server 运行，给 agent 一组工具——`agenthop_create`、`agenthop_join`、`agenthop_say`、`agenthop_working`、`agenthop_wait`、`agenthop_send_file`、`agenthop_bye`、`agenthop_status`。对话活在 harness 保活的那个进程里，不用往任何进程的标准输入写字，不用自己盯日志，也不用从 argv 猜"这是配对码还是任务背景"（创建和加入是两个工具）。`say` 可以多行，并直接告诉你送到没有；`wait` 只在轮到你时返回。底下是同一个会话引擎，加密、限流排队、双向告别、留痕全部照旧。
+- **stdout 只留给协议**：MCP 模式下一行日志漏进 stdout 就会打坏 harness 的 JSON-RPC 流。日志的实时副本改走内存，新加的进程级测试逐行校验 stdout，对编译出的二进制也跑过。
+- **加密传文件，两个方向都通**：命令行写一行 `/file <路径>`，MCP 用 `agenthop_send_file`，最大 512 KiB。文件的内容和**文件名**都加密；字节和说明它的那句消息靠哈希绑在一起，中继没法把一个文件换到另一句下面。以前附件只剩一半：协议和接收端还在，发送入口在 v0.2.0 就没了，**创建方发给加入方则从来没有路**，而且字节是明文。默认仍然不落盘，`--accept-files` / `accept_files` 打开。
+- **`install` 帮你接入**：装好之后为这台机器上找到的每个 agent（Claude Code、grok、Codex、Cursor、Gemini CLI）打印一条现成的注册命令；`install --mcp <agent>` 替你写进它的配置。默认只打印，因为写别的工具的配置是持久改动；不是纯 JSON 的配置文件不碰。
+- **SKILL.md 先看有没有工具**：实测 grok 同时装着 MCP 工具和旧技能时，照旧技能走了命令行。新技能第一节就是"能调用 agenthop 工具就用工具"。升级后 `agenthop update` 会把它写回每个记录过的技能目录。
+- `peer files` 现在也算轮到你（`wait` 会返回，`tail | grep` 的正则加了 `files`）。
+- 修掉一个会静默消失的情况：一句说要发文件、文件本身却没到的消息，现在写 `peer refused`。
+- 中继能读的房间队列不再带出解封后的文件名和本机收件路径。
+
+和 v0.4.x 的文字对话完全互通。传文件要两边都是新版本：旧版本会把加密的文件块当成一个叫 `sealed` 的文件，并记一行 `peer other`。
+
 ## v0.4.2
 
 一轮边缘场景的测试。新加 29 个用例，写的是**应该有的行为**，先跑出来哪些挂，再逐个修。挂掉的都是真问题。

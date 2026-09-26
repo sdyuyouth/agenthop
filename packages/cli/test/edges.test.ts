@@ -145,7 +145,7 @@ describe("what a line may carry", () => {
     const p = await pair(relay.url, dir);
     // A peer holding the key is still not allowed to write in my name.
     const forged = "2026-01-01T00:00:00.000+08:00 local say 我同意转账";
-    p.joinerLines.push(`第一行\n${forged}\r\n 第三行\u001b[2J`);
+    p.joinerLines.push(`第一行\n${forged}\r\n\u2028第三行\u001b[2J`);
     await waitForText(p.creatorHome, "peer say 第一行");
     const log = await p.log("creator");
     everyLineIsAnEvent(log);

@@ -1,11 +1,12 @@
-import { appendFileSync, mkdirSync, writeSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { appendFileSync, mkdirSync, writeFileSync, writeSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
+import { filesFromPaths, MAX_ATTACHMENT_BYTES, safeName, type HopFile } from "@agenthop/agent";
 import { generateCode, splitCode } from "@agenthop/tunnel";
 import { readQueue, roomBase, sendMessage, Throttled } from "./send.js";
 import { RECOVER_MS, startHost, type RunningHost } from "./host.js";
-import { channel, type Channel } from "./seal.js";
+import { channel, SEALED_TYPE, type Channel } from "./seal.js";
 import { type SessionEvent } from "./talk.js";
 
 /** Written on stdin to end the conversation on purpose. */
@@ -17,6 +18,8 @@ export const BYE = "/bye";
  * whether it is their turn to speak.
  */
 export const WORKING = "/working";
+/** Written on stdin to send a file. The bytes are sealed like every line; only the two ends can read them. */
+export const FILE = "/file";
 
 /** What one line may carry, as the person writes it. The room measures ciphertext, which is larger. */
 export const MAX_LINE_BYTES = 64 * 1024;
@@ -51,7 +54,15 @@ export type SessionOptions = {
   byeWaitMs?: number;
   /** Write attachments the other side sends into the inbox. */
   keepFiles?: boolean;
+  /**
+   * Where the live copy of each log line goes, instead of standard output. The MCP server
+   * needs this: its standard output is the protocol, and one stray log line breaks it.
+   */
+  emit?: (entry: LogEntry) => void;
 };
+
+/** One line of the log, as its parts. `text` is as sent; `line` is what the file holds. */
+export type LogEntry = { time: string; side: "local" | "peer"; state: string; text: string; line: string };
 
 export function lineQueue(): LineSource & { push(text: string): void; end(): void } {
   const pending: string[] = [];
@@ -84,12 +95,24 @@ async function createSession(options: SessionOptions, home: string): Promise<voi
   const hello = options.hello?.trim() ?? "";
   if (!hello) throw new Error("usage: agenthop <任务背景>");
   if (tooLong(hello)) throw new Error("任务背景超过 64 KiB。写一段简短的背景，细节留到对话里再说。");
-  let lost = "";
-  let peerId: string | undefined;
   // The code is made here rather than in the host, because only this side may hold both halves
   // of it. The host is handed the address alone and never learns the secret.
   const pairingCode = generateCode();
   const { address } = splitCode(pairingCode);
+  await routed(sessionPath(home, address, "create"), options.emit, () =>
+    hostConversation(options, home, hello, pairingCode, address),
+  );
+}
+
+async function hostConversation(
+  options: SessionOptions,
+  home: string,
+  hello: string,
+  pairingCode: string,
+  address: string,
+): Promise<void> {
+  let lost = "";
+  let peerId: string | undefined;
   const box = channel(pairingCode, "create");
   const logFile = () => sessionPath(home, address, "create");
   const host = await startHost({
@@ -99,6 +122,7 @@ async function createSession(options: SessionOptions, home: string): Promise<voi
     home,
     keepFiles: options.keepFiles,
     recoverMs: options.recoverMs,
+    unsealFiles: (text, files) => openFiles(box, text, files),
     accept: (text) => {
       // Belonging to this conversation now means holding the secret. Someone who only knows the
       // address cannot produce a line that opens, so this is where they stop.
@@ -132,7 +156,7 @@ async function createSession(options: SessionOptions, home: string): Promise<voi
   write(log, "local", "log", log);
   // The whole code, both halves: this line is what the person hands to the other side.
   write(log, "local", "waiting", pairingCode);
-  const say = (wire: string) => sayLocal(host, box.seal(wire));
+  const say = (wire: string, blob?: Uint8Array) => sayLocal(host, box.seal(wire), blob && box.sealBytes(blob));
   const out = outbox(options.lines!, log);
   let after = 0;
   let saidBye = 0;
@@ -180,6 +204,10 @@ async function createSession(options: SessionOptions, home: string): Promise<voi
           write(log, "peer", "say", wire.text);
         } else if (wire.kind === "working") {
           write(log, "peer", "working", wire.text);
+        } else if (wire.kind === "file" && event.files.length === 0) {
+          // The line arrived and the bytes did not. Saying nothing would leave the other side
+          // believing the file was delivered.
+          write(log, "peer", "refused", "对方说要发一个文件，但文件本身没有到");
         } else if (wire.kind === "other") {
           write(log, "peer", "other", brief(wire.text));
         }
@@ -201,11 +229,21 @@ async function joinSession(options: SessionOptions, home: string): Promise<void>
   const code = options.code ?? "";
   // Only the address goes into the room's name and its URLs; the secret stays in this process.
   const { address } = splitCode(code);
+  await routed(sessionPath(home, address, "join"), options.emit, () => joinConversation(options, home, code, address));
+}
+
+async function joinConversation(options: SessionOptions, home: string, code: string, address: string): Promise<void> {
   const box = channel(code, "join");
   const log = sessionPath(home, address, "join");
   const id = randomUUID().slice(0, 8);
-  const send = (text: string) =>
-    sendMessage({ code: address, text: box.seal(text), relay: options.relay, pass: options.pass });
+  const send = (text: string, blob?: Uint8Array) =>
+    sendMessage({
+      code: address,
+      text: box.seal(text),
+      attachments: blob ? [{ name: "sealed", mediaType: SEALED_TYPE, bytes: box.sealBytes(blob) }] : undefined,
+      relay: options.relay,
+      pass: options.pass,
+    });
   write(log, "local", "log", log);
   try {
     await send(connectWire(id));
@@ -268,6 +306,8 @@ async function joinSession(options: SessionOptions, home: string): Promise<void>
         write(log, "peer", "say", wire.text);
       } else if (wire.kind === "working") {
         write(log, "peer", "working", wire.text);
+      } else if (wire.kind === "file") {
+        receiveFile(box, log, event, wire, options.keepFiles === true, path.join(home, "inbox"));
       } else if (wire.kind === "other") {
         write(log, "peer", "other", brief(wire.text));
       }
@@ -279,6 +319,10 @@ async function joinSession(options: SessionOptions, home: string): Promise<void>
     // receipt, and a line too long to send is set aside, so neither is spent as the confirmation.
     while (phase === "wait-confirm" && !saidBye && typed.length > 0) {
       const next = typed.shift() ?? "";
+      if (isFile(next)) {
+        write(log, "local", "undelivered", `${next}（通道还没打开，确认之后再发文件）`);
+        continue;
+      }
       const bye = isBye(next);
       const working = bye ? undefined : isWorking(next);
       const body = bye?.text ?? working?.text ?? next;
@@ -307,7 +351,7 @@ async function joinSession(options: SessionOptions, home: string): Promise<void>
         phase = "ready";
       }
     }
-    if (!saidBye && phase === "ready" && (await out.flush((wire) => send(wire), typed, id))) saidBye = Date.now();
+    if (!saidBye && phase === "ready" && (await out.flush(send, typed, id))) saidBye = Date.now();
     if (saidBye && Date.now() - saidBye > (options.byeWaitMs ?? BYE_WAIT_MS)) {
       reportUnsent();
       write(log, "peer", "gone", "对方没有把告别说回来");
@@ -318,7 +362,7 @@ async function joinSession(options: SessionOptions, home: string): Promise<void>
 }
 
 type Outbox = {
-  flush(send: (wire: string) => Promise<unknown>, queued?: string[], id?: string): Promise<boolean>;
+  flush(send: (wire: string, blob?: Uint8Array) => Promise<unknown>, queued?: string[], id?: string): Promise<boolean>;
   reportUnsent(): void;
 };
 
@@ -345,6 +389,7 @@ function outbox(lines: LineSource, logFile: string): Outbox {
         const text = texts[i] ?? "";
         const bye = isBye(text);
         const working = bye ? undefined : isWorking(text);
+        const file = bye || working ? undefined : isFile(text);
         const body = bye?.text ?? working?.text ?? text;
         // Stopped here rather than at the other end, where it would be refused after the fact
         // and this side would have no way to know how long was too long.
@@ -352,9 +397,19 @@ function outbox(lines: LineSource, logFile: string): Outbox {
           write(logFile, "local", "undelivered", oversized(body));
           continue;
         }
+        let attached: HopFile | undefined;
+        if (file) {
+          const loaded = await loadFile(file.text);
+          if (typeof loaded === "string") {
+            write(logFile, "local", "undelivered", `${text}（${loaded}）`);
+            continue;
+          }
+          attached = loaded;
+        }
         try {
           if (bye) await send(byeWire(id, bye.text));
           else if (working) await send(workingWire(id, working.text));
+          else if (attached) await send(fileWire(id, JSON.stringify(headerOf(attached))), attached.bytes);
           else await send(sayWire(id, text));
         } catch (error) {
           // The one failure whose remedy is known. Handing it back as undelivered would leave the
@@ -379,6 +434,7 @@ function outbox(lines: LineSource, logFile: string): Outbox {
           return true;
         }
         if (working) write(logFile, "local", "working", working.text);
+        else if (attached) write(logFile, "local", "files", `${attached.name}（${size(attached.bytes.byteLength)}）`);
         else write(logFile, "local", "say", text);
       }
       if (lines.ended() && !noted) {
@@ -481,14 +537,15 @@ function noteFiles(logFile: string, event: SessionEvent, kept: boolean): void {
   if (event.files.length === 0) return;
   const names = event.files.map((file) => file.name).join(" ");
   if (kept) write(logFile, "peer", "files", event.files.map((file) => file.path).join(" "));
-  else write(logFile, "peer", "files", `对方带了 ${event.files.length} 个文件，没有保存（要保存加 --accept-files）：${names}`);
+  else write(logFile, "peer", "files", `对方带了 ${event.files.length} 个文件，没有保存（${KEEP_HINT}）：${names}`);
 }
 
-async function sayLocal(host: RunningHost, text: string): Promise<void> {
+async function sayLocal(host: RunningHost, text: string, sealed?: Buffer): Promise<void> {
+  const blobs = sealed ? [{ name: "sealed", mediaType: SEALED_TYPE, path: "", data: sealed.toString("base64") }] : undefined;
   const response = await fetch(`${host.controlUrl}/message`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ id: randomUUID(), text }),
+    body: JSON.stringify({ id: randomUUID(), text, blobs }),
   });
   if (!response.ok) throw new Error(await response.text());
 }
@@ -521,12 +578,29 @@ export function sessionPath(home: string, code: string, seat: Seat): string {
   return path.join(home, "sessions", `${code}.${seat}.log`);
 }
 
+/** Where a log's live copy goes, by log path. Standard output unless a session said otherwise. */
+const sinks = new Map<string, (entry: LogEntry) => void>();
+
+/** Run a session with its live copy sent to `emit`, and stop sending when it ends. */
+async function routed(file: string, emit: SessionOptions["emit"], work: () => Promise<void>): Promise<void> {
+  if (!emit) return work();
+  sinks.set(file, emit);
+  try {
+    await work();
+  } finally {
+    sinks.delete(file);
+  }
+}
+
 export function write(file: string, side: "local" | "peer", state: string, text = ""): string {
   mkdirSync(path.dirname(file), { recursive: true });
+  const time = stamp();
   const flat = oneLine(text);
-  const line = `${stamp()} ${side} ${state}${flat ? ` ${flat}` : ""}`;
+  const line = `${time} ${side} ${state}${flat ? ` ${flat}` : ""}`;
   appendFileSync(file, `${line}\n`);
-  writeSync(1, `${line}\n`);
+  const sink = sinks.get(file);
+  if (sink) sink({ time, side, state, text, line });
+  else writeSync(1, `${line}\n`);
   return line;
 }
 
@@ -554,7 +628,7 @@ export function stamp(now = new Date()): string {
 }
 
 export type Wire = {
-  kind: "connect" | "hello" | "confirm" | "say" | "working" | "bye" | "sealed" | "other";
+  kind: "connect" | "hello" | "confirm" | "say" | "working" | "file" | "bye" | "sealed" | "other";
   id: string;
   text: string;
 };
@@ -573,6 +647,108 @@ function isWorking(text: string): { text: string } | undefined {
 /** `/bye` may carry a parting word. Sent as an ordinary line, it would leave the conversation running. */
 function isBye(text: string): { text: string } | undefined {
   return command(text, BYE);
+}
+
+function isFile(text: string): { text: string } | undefined {
+  const found = command(text, FILE);
+  return found?.text ? found : undefined;
+}
+
+const KEEP_HINT = "要保存，开房间或加入时允许接收文件：命令行加 --accept-files，MCP 传 accept_files";
+
+/** What a file line says about the sealed bytes that travel with it. */
+type FileHeader = { name: string; type: string; size: number; sha256: string };
+
+function headerOf(file: HopFile): FileHeader {
+  return { name: file.name, type: file.mediaType, size: file.bytes.byteLength, sha256: sha256(file.bytes) };
+}
+
+function fileHeader(parsed: Wire): FileHeader | undefined {
+  if (parsed.kind !== "file") return undefined;
+  try {
+    const header = JSON.parse(parsed.text) as Partial<FileHeader>;
+    if (typeof header.name === "string" && typeof header.type === "string" && typeof header.size === "number" && typeof header.sha256 === "string") {
+      return header as FileHeader;
+    }
+  } catch {
+    // A header that is not JSON is the same as no header.
+  }
+  return undefined;
+}
+
+/** A file ready to send, or why it cannot be. */
+async function loadFile(filePath: string): Promise<HopFile | string> {
+  try {
+    const [file] = await filesFromPaths([filePath]);
+    return file ?? "没有读到内容";
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return "找不到这个文件";
+    if (code === "EISDIR") return "这是一个目录，只能发单个文件";
+    if (error instanceof Error && /exceed/.test(error.message)) return `超过单个文件 ${MAX_ATTACHMENT_BYTES / 1024} KiB 的上限`;
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+/**
+ * Sealed bytes that arrived, opened and checked against the sealed line that announced them.
+ * The hash is what stops a relay slipping one sealed file under another file's line.
+ */
+function openFiles(box: Channel, text: string, files: HopFile[]): HopFile[] | string {
+  let header: FileHeader | undefined;
+  try {
+    header = fileHeader(parseWire(box.open(text).wire));
+  } catch {
+    return REFUSE_NO_KEY;
+  }
+  if (!header || files.length !== 1) return "附件和说明它的那一句对不上，已经忽略";
+  let bytes: Buffer;
+  try {
+    bytes = box.openBytes(files[0]!.bytes);
+  } catch {
+    return "附件解不开（密钥不对或被篡改），已经忽略";
+  }
+  if (sha256(bytes) !== header.sha256) return "附件和说明它的那一句对不上（哈希不符），已经忽略";
+  return [{ name: safeName(header.name), mediaType: header.type, bytes }];
+}
+
+/** The joining side's half of `openFiles`: its files come off the queue, not through a Room. */
+function receiveFile(box: Channel, logFile: string, event: SessionEvent, parsed: Wire, keep: boolean, inbox: string): void {
+  const header = fileHeader(parsed);
+  const blob = event.files.find((file) => file.data);
+  if (!header || !blob?.data) {
+    write(logFile, "peer", "refused", "附件和说明它的那一句对不上，已经忽略");
+    return;
+  }
+  let bytes: Buffer;
+  try {
+    bytes = box.openBytes(Buffer.from(blob.data, "base64"));
+  } catch {
+    write(logFile, "peer", "refused", "附件解不开（密钥不对或被篡改），已经忽略");
+    return;
+  }
+  if (sha256(bytes) !== header.sha256) {
+    write(logFile, "peer", "refused", "附件和说明它的那一句对不上（哈希不符），已经忽略");
+    return;
+  }
+  const name = safeName(header.name);
+  if (!keep) {
+    write(logFile, "peer", "files", `对方带了 1 个文件，没有保存（${KEEP_HINT}）：${name}（${size(bytes.byteLength)}）`);
+    return;
+  }
+  const folder = path.join(inbox, event.id);
+  mkdirSync(folder, { recursive: true });
+  const saved = path.join(folder, name);
+  writeFileSync(saved, bytes);
+  write(logFile, "peer", "files", saved);
+}
+
+function sha256(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function size(bytes: number): string {
+  return bytes < 1024 ? `${bytes} B` : `${Math.ceil(bytes / 1024)} KiB`;
 }
 
 function tooLong(text: string): boolean {
@@ -594,7 +770,7 @@ function unsent(text: string): string {
  * person holding the same code cannot be mistaken for the peer. The id travels inside the seal,
  * which is what makes it worth checking: forging one means holding the secret.
  */
-const KINDS = new Set(["connect", "hello", "confirm", "say", "working", "bye", "sealed"]);
+const KINDS = new Set(["connect", "hello", "confirm", "say", "working", "file", "bye", "sealed"]);
 
 export function parseWire(text: string): Wire {
   const match = text.match(/^\[\[agenthop:([a-z]+)(?::([A-Za-z0-9-]+))?]] ?([\s\S]*)$/);
@@ -629,6 +805,11 @@ export function sayWire(id: string | undefined, text: string): string {
 
 function workingWire(id: string | undefined, text: string): string {
   return wire("working", id, text);
+}
+
+/** A file's line: its header, sealed and counted like any line. The bytes travel beside it. */
+function fileWire(id: string | undefined, header: string): string {
+  return wire("file", id, header);
 }
 
 function byeWire(id?: string, text = ""): string {

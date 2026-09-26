@@ -43,9 +43,18 @@ tunnel ─┬─ relay-node（自建中继，ws + node:http）
 
 ## 一次对话是怎么跑起来的
 
-面向用户的命令只有 `agenthop <任务背景>`（创建）和 `agenthop <配对码>`（加入），加上 install / update / relay / help / --version。`bin.ts` 只做分发，参数解析和输入分类在 `args.ts`（可单测，`bin.ts` 一导入就会执行，不要在测试里 import 它）。
+面向用户的命令只有 `agenthop <任务背景>`（创建）和 `agenthop <配对码>`（加入），加上 mcp / install / update / relay / help / --version。`bin.ts` 只做分发，参数解析和输入分类在 `args.ts`（可单测，`bin.ts` 一导入就会执行，不要在测试里 import 它）。
 
 **分类出错不会报错，而是开错房间**——把配对码当成任务背景，就是新开一个房间、把码当 hello 发出去，agent 还以为自己加入了。所以 `codeAttempt` 对码的**外包装**放得宽（反引号、引号、括号、句末标点、整行 `local waiting …`、带时间戳的日志行、全角、被终端折成两段的密钥、码后面跟一句中文指令），对**什么算码**收得紧：全是码字符的输入按码严格校验，打错就报错；以年份开头、接着是中文的是任务背景。改这里先跑 `args.test.ts`。
+
+**MCP 模式是推荐用法**（`mcp.ts`，`agenthop mcp`，v0.5.0）。命令行用法要求 agent 往一个正在运行的进程的标准输入里写字，而大多数 agent harness 没有这个能力——实测中 Claude Code 每次都得临时搭 `tail -f 文件 | agenthop` 的管道。MCP server 由 harness 启动并保活，对话就活在它里面，"一个进程从头跑到尾"这条规矩反而更牢。它是**同一个会话引擎的另一个前端**，不是重写：工具往 `lineQueue()` 里推行，日志的实时副本经 `SessionOptions.emit` 送回来给 `wait`。几条要守住的：
+
+- **stdout 是协议**。`write()` 按日志路径查 `sinks`（`routed()` 在会话开始时登记、结束时撤掉），登记过的会话不写 fd 1。漏一行日志进 stdout 就会把 harness 的 JSON-RPC 流打坏——`mcp-stdio.test.ts` 起真进程逐行校验，设 `AGENTHOP_BIN` 可以对编译出的二进制跑同一个测试。
+- **工具参数是字，不是命令**：`agenthop_say("/bye")` 会被拒并指向 `agenthop_bye`，不会意外结束对话。
+- `wait` 只在轮到你时返回（`TURN`：hello / confirm / say / files / bye），其余动静（对方的 working、这边的 throttled 等）随结果一起给出；自己刚做的事（say、working、files）不回显，工具调用本身已经报过了。
+- 参数分类（反引号、年份开头那些）在 MCP 模式下整类不存在：创建和加入是两个工具。`agenthop_join` 仍然过一遍 `classifyInput`，因为 agent 照样会包反引号。
+- **装着旧技能的 agent 会绕过 MCP**。实测 grok 同时有 MCP 工具和 v0.4 的 SKILL.md 时，照技能走了命令行 + `tail | grep`。所以 SKILL.md 开头第一节就是"先看有没有 agenthop 工具"，改技能时别把它挪下去。
+- `install` 默认只**打印**各 agent 的注册命令（`agents.ts`）；写进别的工具的配置是持久改动，只在 `--mcp <agent>` 点名时才做，而且不是纯 JSON 的配置文件不碰。
 
 创建方（`session.ts: createSession`）：
 
@@ -113,6 +122,9 @@ tunnel ─┬─ relay-node（自建中继，ws + node:http）
 - **配对码分两半，密钥那半绝不进中继**：`addressOf` 在 `host.ts:52` 剥一次，`relayEndpoints` 再剥一次，中继还会拒五段码——三道独立关卡。日志文件名只用地址；`local waiting` 那一行是唯一该出现完整码的地方（它就是交给对方的东西）。**中继只认四段地址，所以 v0.4 之前的中继原样就能服务 v0.4 的客户端**，改中继时这个 diff 应该只有 `isRoomAddress` 这个名字。
 - **`open()` 是纯函数，防重放的 `fresh()` 是另一个对象**。创建方对每条进来的消息解密两次（`accept` 一次、轮询循环一次），把重放检查塞进 `open()` 会让每一条正常消息在第二次查看时被拒。拒绝时**必须写出 `peer refused`**——静默丢话那条规矩在这里同样不能退。
 - **词表里每个词都得是一段纯小写字母**（`tunnel.test.ts` 有不变量测试）。`wordlist.ts` 曾经混进一个 `yo-yo`，抽中就生成五段码，中继直接拒绝，0.23% 的会话一开就废。`generateCode` 现在也校验自己的输出。
-- 房间 10 分钟没有转发就消失（`IDLE_MS`）。TLS 在 Cloudflare 终结，但中继拿到的是密文——**没有前向保密，附件的字节也不加密**，别在文档里暗示有。
-- 附件（`packages/agent`，512 KiB 上限）在协议和 `Room` 里还在，但会话流程没有入口。`SPEC.md` 仍然描述它，不要顺手删。
+- 房间 10 分钟没有转发就消失（`IDLE_MS`）。TLS 在 Cloudflare 终结，但中继拿到的是密文——**没有前向保密**，别在文档里暗示有。
+- **文件跟一句加密的 `file` 消息一起走**（v0.5.0）：头部（名字、类型、大小、SHA-256）在那一句里，字节用同一把方向密钥另外封一层（`seal.ts: sealBytes`，和消息用不同的 AAD 标签，一个不能冒充另一个）。加入方→创建方随 POST 的 raw part 走，在 `Room` 里经 `unsealFiles` 解封、核对哈希之后才落盘；创建方→加入方以前**根本没有路**（队列只返回文件元数据），现在封好的字节挂在 `Talk` 事件的 `data` 上、经队列取走。512 KiB 上限在 `packages/agent`。
+- **中继能读的队列不许带出解封后的东西**：`host.ts: overTheRelay` 只让"创建方发出的文件"以 `sealed` 的名字和封好的字节出现在 `/agenthop/queue` 里。加入方发来的文件，其真实名字和创建方本机的收件路径是解封**之后**才写进房间日志的，原样吐出去等于把名字和路径交给任何拿到房间地址的人。本机的 control server 不受影响，它要完整信息。
+- **一句说要发文件、却没带文件的 `file` 消息，要写 `peer refused`**。没有文件就不走 `noteFiles`，而分发里又没有 `file` 分支——它曾经就这样一声不响地消失过。
+- **`outbox.flush` 的 `send` 直接传，不要包成 `(wire) => send(wire)`**。第二个参数是文件字节，包一层就丢了——加入方发的文件真的因此从来没到过，而日志写着 `local files` 以为送到了。
 - 注释和 commit message 用英文，README / SKILL.md / CLI 帮助文本用中文（`README.en.md` 除外）。

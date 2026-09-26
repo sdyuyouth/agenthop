@@ -2,8 +2,9 @@ import { writeSync } from "node:fs";
 import { startRelay } from "@agenthop/relay-node";
 import { classifyInput, parseArgs } from "./args.js";
 import { installAgenthop } from "./install.js";
+import { startMcpServer } from "./mcp.js";
 import { updateAgenthop } from "./update.js";
-import { BYE, WORKING, runSession } from "./session.js";
+import { BYE, FILE, WORKING, runSession } from "./session.js";
 import { version } from "./version.js";
 
 try {
@@ -29,8 +30,11 @@ try {
       });
       // The conversation is over. An open stdin would otherwise keep the process alive for good.
       process.exit(0);
+    } else if (input.name === "mcp") {
+      // Nothing else may reach standard output from here on: it is the protocol.
+      await startMcpServer({ relay: flags.relay, pass: flags.pass ?? process.env.AGENTHOP_PASS });
     } else if (input.name === "install") {
-      installAgenthop({ skillDirs: flags.skillDirs, skillOnly: flags.skillOnly });
+      installAgenthop({ skillDirs: flags.skillDirs, skillOnly: flags.skillOnly, mcp: flags.mcpAgents });
     } else if (input.name === "update" || input.name === "upgrade" || input.name === "self-update") {
       await updateAgenthop({ check: flags.check, force: flags.force });
     } else if (input.name === "version") {
@@ -57,7 +61,13 @@ try {
 
 function printHelp(): void {
   const lines = [
-    "对话",
+    "作为 MCP 工具（推荐）",
+    "  agenthop mcp            以 MCP server 运行，给 agent 提供 agenthop_create / join / say / wait /",
+    "                          working / send_file / bye / status 这些工具，不用往进程的标准输入写字。",
+    "  agenthop install 会打印每个找到的 agent 的注册命令；install --mcp <agent> 替你写进它的配置",
+    "  （claude、grok、codex、cursor、gemini，可重复）。",
+    "",
+    "对话（命令行）",
     "  agenthop <任务背景>     创建房间，这段文字作为 hello 发给对方",
     "  agenthop <配对码>       加入对方的房间",
     "",
@@ -71,10 +81,10 @@ function printHelp(): void {
     "  相符就写一行确认，创建方随后输出 ready；不相符就问用户，不要写标准输入。",
     `  ready 之后对方的每一句是 peer say。写一行 ${BYE} 结束对话，后面可以带一句告别的话。`,
     "",
-    "  轮到你接话的只有 peer hello、peer confirm、peer say、peer bye 四行。",
+    "  轮到你接话的只有 peer hello、peer confirm、peer say、peer files、peer bye。",
     `  读到 peer say 的第一件事是写一行 ${WORKING} <在做什么、大概多久>，然后再开始干活。`,
     "  对方那边出现的是 peer working，它不占对方的一轮——所以读到 peer working 时安心等着就行。",
-    "  只在轮到自己时醒来：tail -n 0 -f <日志路径> | grep -m1 -E ' peer (say|bye|hello|confirm)( |$)'",
+    "  只在轮到自己时醒来：tail -n 0 -f <日志路径> | grep -m1 -E ' peer (say|bye|hello|confirm|files)( |$)'",
     "  对方会把 bye 说回来，两边各有 local bye 和 peer bye，然后各自退出。",
     "  读到 peer bye 不用回应，程序会自己把 bye 说回去。",
     "",
@@ -86,7 +96,8 @@ function printHelp(): void {
     "  没人加入而房间过期是 local expired。",
     "  peer refused 表示那一句没有进入对话也没有落盘：对方拿不出配对码里的密钥、重复的一句，",
     "  或者这次会话用量到顶（总量 8 MiB、2000 条、单条正文 64 KiB）。",
-    "  对方带附件写 peer files，默认只记名字不保存；要保存加 --accept-files。",
+    `  发文件写一行 ${FILE} <路径>（最大 512 KiB，内容和文件名都加密）。`,
+    "  对方发来文件写 peer files，默认只记名字不保存；要保存加 --accept-files。",
     "",
     "  日志：启动后第一行 local log <绝对路径> 就是它，直接告诉用户这个路径。",
     "        创建方 <家目录>/.agenthop/sessions/<房间地址>.create.log，加入方 <房间地址>.join.log。",

@@ -73,6 +73,38 @@ describe("seal", () => {
   });
 });
 
+describe("sealed files", () => {
+  it("carries bytes from one side to the other, and not back", () => {
+    const creator = channel(CODE, "create");
+    const joiner = channel(CODE, "join");
+    const bytes = Buffer.from("第一行\n第二行\u0000二进制也行");
+    expect(joiner.openBytes(creator.sealBytes(bytes)).equals(bytes)).toBe(true);
+    expect(creator.openBytes(joiner.sealBytes(bytes)).equals(bytes)).toBe(true);
+    expect(() => creator.openBytes(creator.sealBytes(bytes))).toThrow(SealError);
+  });
+
+  it("refuses bytes that were touched, cut short, or sealed for another room", () => {
+    const sealed = channel(CODE, "create").sealBytes(Buffer.from("内容"));
+    const joiner = channel(CODE, "join");
+    const touched = Buffer.from(sealed);
+    touched[touched.length - 20] = touched[touched.length - 20]! ^ 1;
+    expect(() => joiner.openBytes(touched)).toThrow(SealError);
+    expect(() => joiner.openBytes(sealed.subarray(0, 10))).toThrow(SealError);
+    expect(() => channel(SAME_ROOM, "join").openBytes(sealed)).toThrow(SealError);
+  });
+
+  it("will not open a line's seal as a file's, or a file's as a line's", () => {
+    // Each has its own label, so a relay cannot hand one over as the other.
+    const creator = channel(CODE, "create");
+    const joiner = channel(CODE, "join");
+    const line = creator.seal("[[agenthop:say]] 你好");
+    const payload = Buffer.from(line.slice("[[agenthop:sealed]] ".length), "base64url");
+    expect(() => joiner.openBytes(payload)).toThrow(SealError);
+    const file = creator.sealBytes(Buffer.from("[[agenthop:say]] 你好"));
+    expect(() => joiner.open(`[[agenthop:sealed]] ${file.toString("base64url")}`)).toThrow(SealError);
+  });
+});
+
 /** Change one character of the ciphertext without changing its length. */
 function flip(sealed: string): string {
   const at = sealed.length - 4;

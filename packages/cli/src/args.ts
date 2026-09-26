@@ -5,6 +5,7 @@ export type Flags = {
   pass?: string;
   listen?: string;
   skillDirs: string[];
+  mcpAgents: string[];
   check: boolean;
   force: boolean;
   skillOnly: boolean;
@@ -28,7 +29,7 @@ const RETIRED_FLAGS: Record<string, string> = {
   "--ask": "现在每一行都是同一条对话里的一句话，不再分提问和回答。",
   "--answer": "现在每一行都是同一条对话里的一句话，不再分提问和回答。",
   "--supplement": "现在每一行都是同一条对话里的一句话，补充直接再写一行。",
-  "--file": "这一版的对话只走文本。",
+  "--file": "发文件现在是在标准输入里写一行 /file <路径>，或者用 MCP 的 agenthop_send_file。",
   "--out": "这一版的对话只走文本。",
   "--text": "正文直接写进标准输入，一行就是一句。",
   "--json": "输出格式就是日志那一行：<时间> <local|peer> <状态> <正文>。",
@@ -37,10 +38,10 @@ const RETIRED_FLAGS: Record<string, string> = {
 /** Commands that older releases documented. */
 const RETIRED_COMMANDS = new Set(["host", "join", "watch", "send", "reply", "queue", "inbox"]);
 
-export const COMMANDS = new Set(["install", "update", "upgrade", "self-update", "relay", "help", "version"]);
+export const COMMANDS = new Set(["install", "update", "upgrade", "self-update", "relay", "mcp", "help", "version"]);
 
 export function parseArgs(args: string[]): Parsed {
-  const flags: Flags = { skillDirs: [], check: false, force: false, skillOnly: false, acceptFiles: false, help: false, version: false };
+  const flags: Flags = { skillDirs: [], mcpAgents: [], check: false, force: false, skillOnly: false, acceptFiles: false, help: false, version: false };
   const positionals: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i] ?? "";
@@ -53,6 +54,10 @@ export function parseArgs(args: string[]): Parsed {
       const value = args[++i];
       if (!value) throw new Error("--skill-dir 后面要跟一个目录");
       flags.skillDirs.push(value);
+    } else if (arg === "--mcp") {
+      const value = args[++i];
+      if (!value) throw new Error("--mcp 后面要跟一个 agent 的名字：claude、grok、codex、cursor 或 gemini");
+      flags.mcpAgents.push(value);
     } else if (arg === "--accept-files") flags.acceptFiles = true;
     else if (arg === "--skill-only") flags.skillOnly = true;
     else if (arg === "--check") flags.check = true;
