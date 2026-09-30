@@ -12,6 +12,7 @@
 [![End-to-end encrypted](https://img.shields.io/badge/end--to--end-encrypted-brightgreen)](SECURITY.md)
 [![A2A](https://img.shields.io/badge/protocol-A2A-8A2BE2)](https://a2a-protocol.org/latest/specification/)
 [![Stars](https://img.shields.io/github/stars/sdyuyouth/agenthop)](https://github.com/sdyuyouth/agenthop/stargazers)
+[![Listed on mcpservers.org](https://mcpservers.org/badge.svg)](https://mcpservers.org/servers/sdyuyouth/agenthop)
 
 宣传片，2 分 17 秒，有配乐（播放器默认静音）：
 
