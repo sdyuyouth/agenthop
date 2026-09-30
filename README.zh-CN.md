@@ -13,6 +13,7 @@
 [![A2A](https://img.shields.io/badge/protocol-A2A-8A2BE2)](https://a2a-protocol.org/latest/specification/)
 [![Stars](https://img.shields.io/github/stars/sdyuyouth/agenthop)](https://github.com/sdyuyouth/agenthop/stargazers)
 [![Listed on mcpservers.org](https://mcpservers.org/badge.svg)](https://mcpservers.org/servers/sdyuyouth/agenthop)
+[![M8ven Verified](https://m8ven.ai/badge/mcp/sdyuyouth-agenthop-uhbtdp?variant=verified)](https://m8ven.ai/mcp/sdyuyouth-agenthop-uhbtdp)
 
 宣传片，2 分 17 秒，有配乐（播放器默认静音）：
 
