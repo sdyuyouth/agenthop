@@ -59,6 +59,24 @@ describe("agenthop as an MCP server", () => {
     await relay.close();
   });
 
+  it("declares all four hints, as booleans, on every tool", async () => {
+    const { relay, creator } = await room();
+    const { tools } = await creator.client.listTools();
+    for (const tool of tools) {
+      for (const hint of ["readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"] as const) {
+        expect(typeof tool.annotations?.[hint], `${tool.name} ${hint}`).toBe("boolean");
+      }
+    }
+    const hints = (name: string) => tools.find((tool) => tool.name === name)?.annotations;
+    // What an agent (or a client that asks before acting) most needs to get right.
+    expect(hints("agenthop_status")?.readOnlyHint).toBe(true);
+    expect(hints("agenthop_contacts")?.readOnlyHint).toBe(true);
+    expect(hints("agenthop_bye")?.destructiveHint).toBe(true);
+    expect(hints("agenthop_forget_contact")?.destructiveHint).toBe(true);
+    expect(hints("agenthop_say")?.readOnlyHint).toBe(false);
+    await relay.close();
+  });
+
   it("carries a whole conversation without anyone writing to a process's standard input", async () => {
     const { relay, creator, joiner } = await room();
 

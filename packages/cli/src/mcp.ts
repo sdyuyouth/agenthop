@@ -36,6 +36,18 @@ export type McpOptions = {
 const DEFAULT_WAIT_S = 50;
 const MAX_WAIT_S = 290;
 
+/**
+ * Every tool declares all four hints, as booleans: some directories reject a tool with any of them missing.
+ * The hints are about the world outside this process: the relay and the other side are "open world", the
+ * contacts file and the log are not.
+ */
+const TALKS = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true };
+const WAITS = { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true };
+const ENDS = { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true };
+const LOOKS = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
+const KEEPS = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
+const FORGETS = { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false };
+
 /** Lines that mean it is this side's turn, or that there is nothing more to wait for. */
 const TURN = new Set(["hello", "confirm", "say", "files", "bye"]);
 const OVER = new Set(["gone", "expired"]);
@@ -192,6 +204,7 @@ export async function startMcpServer(options: McpOptions = {}, transport: Transp
   server.registerTool(
     "agenthop_create",
     {
+      annotations: TALKS,
       description: t(
         "Open a room and return its pairing code. Hand the whole code to the user to pass on; the other side's agent joins with agenthop_join. background is what this conversation is about: it goes to the other side as your opening line, and they use it to check they have the right partner.",
         "开一个房间，返回配对码。把配对码整串交给用户，由用户转给对方；对方的 agent 用 agenthop_join 加入。background 是这次要谈的事，会作为开场白发给对方，对方据此判断是不是找对了人。",
@@ -222,6 +235,7 @@ export async function startMcpServer(options: McpOptions = {}, transport: Transp
   server.registerTool(
     "agenthop_join",
     {
+      annotations: TALKS,
       description: t(
         "Join the other side's room with its pairing code; returns once their opening line (the task background) arrives. Check that it matches your context: if it does, confirm with one line via agenthop_say and the channel opens; if not, ask the user and do not reply.",
         "用配对码加入对方的房间，等到对方的开场白（任务背景）后返回。读完后判断它是否和你的上下文相符：相符就用 agenthop_say 写一句确认，通道随即打开；不相符就问用户，不要回复。",
@@ -262,6 +276,7 @@ export async function startMcpServer(options: McpOptions = {}, transport: Transp
   server.registerTool(
     "agenthop_say",
     {
+      annotations: TALKS,
       description: t(
         "Say something to the other side; it may span several lines. Returns whether it was delivered. The joining side's first line is its confirmation of the opening line. Use agenthop_working for receipts and agenthop_bye to finish.",
         "对对方说一句话，可以多行。返回是否送达。加入方的第一句就是对开场白的确认。收条用 agenthop_working，结束用 agenthop_bye。",
@@ -303,6 +318,7 @@ export async function startMcpServer(options: McpOptions = {}, transport: Transp
   server.registerTool(
     "agenthop_working",
     {
+      annotations: TALKS,
       description: t(
         "Send a receipt: tell the other side you got their line, are working on it, and roughly how long it will take. They see progress rather than a line that needs an answer, so they wait instead of thinking you dropped. Call it right after a line arrives, before starting the work.",
         "回一张收条：告诉对方你收到了、正在处理，以及大概要多久。对方看到的是进度而不是一句需要回应的话，它会安心等着，不会以为你掉线了。收到对方一句后先调用它，再开始干活。",
@@ -332,6 +348,7 @@ export async function startMcpServer(options: McpOptions = {}, transport: Transp
   server.registerTool(
     "agenthop_send_file",
     {
+      annotations: TALKS,
       description: t(
         `Send a file to the other side (at most ${MAX_ATTACHMENT_BYTES / 1024} KiB). Its contents and name are end-to-end encrypted; the relay sees neither. The other side keeps it on disk only if they allowed files when opening or joining; otherwise only the name is recorded.`,
         `发一个文件给对方（最大 ${MAX_ATTACHMENT_BYTES / 1024} KiB），文件内容和文件名都端到端加密，中继看不到。对方要在开房间或加入时允许接收文件才会存到磁盘，否则只记下文件名。`,
@@ -357,6 +374,7 @@ export async function startMcpServer(options: McpOptions = {}, transport: Transp
   server.registerTool(
     "agenthop_wait",
     {
+      annotations: WAITS,
       description: t(
         "Wait for the other side. Returns only when it is your turn (they said something, confirmed, or said goodbye) or when the time runs out, with everything new since, including their progress (working). If nothing came in time, call it again. With no conversation going, it waits for invitations from contacts.",
         "等对方说话。只在轮到你时返回（对方说了话、确认了、或告别了），或者等到超时。返回这期间的所有新动静，包括对方的进度（working）。超时没等到就再调一次。没有进行中的对话时，等的是联系人发来的邀请。",
@@ -398,6 +416,7 @@ export async function startMcpServer(options: McpOptions = {}, transport: Transp
   server.registerTool(
     "agenthop_bye",
     {
+      annotations: ENDS,
       description: t(
         "End the conversation, optionally with a parting line. The other side says goodbye back, then both sides finish.",
         "结束对话，可以带一句告别的话。对方会把告别说回来，然后两边各自结束。",
@@ -421,6 +440,7 @@ export async function startMcpServer(options: McpOptions = {}, transport: Transp
   server.registerTool(
     "agenthop_status",
     {
+      annotations: LOOKS,
       description: t(
         "Show where the current conversation is: which step, the pairing code, where the log is; and this machine's identity, its inbox and pending invitations.",
         "看当前对话的状态：在哪一步、配对码、日志在哪；以及本机的身份、收件地址和待处理的邀请。",
@@ -460,6 +480,7 @@ export async function startMcpServer(options: McpOptions = {}, transport: Transp
   server.registerTool(
     "agenthop_save_contact",
     {
+      annotations: KEEPS,
       description: t(
         "Save the other side of this conversation (ongoing or just finished) as a contact. Later, agenthop_invite can invite them by name, with no pairing code to pass on. They must save you as a contact too, or your invitations will not be taken.",
         "把这场对话（进行中或刚结束的）里的对方存为联系人。以后用 agenthop_invite 按名字邀请它，不用再转交配对码。对方也要把你存为联系人，邀请才会被收下。",
@@ -504,6 +525,7 @@ export async function startMcpServer(options: McpOptions = {}, transport: Transp
   server.registerTool(
     "agenthop_contacts",
     {
+      annotations: LOOKS,
       description: t(
         "List contacts (name, fingerprint), this machine's own fingerprint, whether its inbox is online, and pending invitations.",
         "列出联系人（名字、指纹），以及本机自己的指纹、收件地址是否在线、待处理的邀请。",
@@ -531,6 +553,7 @@ export async function startMcpServer(options: McpOptions = {}, transport: Transp
   server.registerTool(
     "agenthop_forget_contact",
     {
+      annotations: FORGETS,
       description: t(
         "Delete a contact. Their invitations will no longer be taken, and you can no longer invite them by name.",
         "删掉一个联系人。之后它的邀请不会再被收下，你也不能再按名字邀请它。",
@@ -553,6 +576,7 @@ export async function startMcpServer(options: McpOptions = {}, transport: Transp
   server.registerTool(
     "agenthop_invite",
     {
+      annotations: TALKS,
       description: t(
         "Invite a contact to talk, by name, with no pairing code to pass on. background is what the conversation is about; they receive it as the opening line once they accept. Their agent must have agenthop running right now to receive it; if it does not, you are told so. Once it is delivered, use agenthop_wait to wait for them to join and confirm.",
         "按名字邀请一个联系人对话，不用转交配对码。background 是这次要谈的事，对方接受后会作为开场白收到。对方的 agent 此刻要开着 agenthop 才收得到；不在线会直接告诉你。送到之后用 agenthop_wait 等它加入并确认。",
@@ -616,6 +640,7 @@ export async function startMcpServer(options: McpOptions = {}, transport: Transp
   server.registerTool(
     "agenthop_accept",
     {
+      annotations: TALKS,
       description: t(
         "Accept a contact's invitation: join the room they opened and return their opening line (the task background). Tell the user about the invitation first and call this only once they agree, unless they said beforehand to accept anyone who calls. Then treat the opening line as with agenthop_join: if it matches, confirm with one line via agenthop_say.",
         "接受一个联系人的邀请：加入它开的房间，返回它的开场白（任务背景）。先把邀请告诉用户，用户同意了再调用，除非用户事先说过有人找就接。读完开场白的做法和 agenthop_join 一样：相符就用 agenthop_say 写一句确认。",
@@ -654,6 +679,7 @@ export async function startMcpServer(options: McpOptions = {}, transport: Transp
   server.registerTool(
     "agenthop_decline",
     {
+      annotations: TALKS,
       description: t(
         "Decline a contact's invitation, optionally with a reason. They know right away instead of waiting.",
         "回绝一个联系人的邀请，可以带一句理由。对方会马上知道，不用干等。",
