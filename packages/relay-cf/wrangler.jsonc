@@ -9,10 +9,15 @@
   "routes": [{ "pattern": "agenthop.imatrix.tech", "custom_domain": true }],
   "durable_objects": {
     "bindings": [
-      { "name": "ROOM", "class_name": "Room" },
-      { "name": "RATE_LIMIT", "class_name": "RateLimit" }
+      { "name": "ROOM", "class_name": "Room" }
     ]
   },
+  "ratelimits": [
+    { "name": "CREATE_LIMIT", "namespace_id": "9170101", "simple": { "limit": 10, "period": 60 } },
+    { "name": "ROOM_CONNECT_LIMIT", "namespace_id": "9170102", "simple": { "limit": 20, "period": 60 } },
+    { "name": "LOOKUP_LIMIT", "namespace_id": "9170103", "simple": { "limit": 300, "period": 60 } },
+    { "name": "MISS_LIMIT", "namespace_id": "9170104", "simple": { "limit": 60, "period": 60 } }
+  ],
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["Room", "RateLimit"] }
   ]

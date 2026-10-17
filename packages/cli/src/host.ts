@@ -13,6 +13,7 @@ import { t } from "./lang.js";
 import { listenControl, Room, type RoomLimits, type RoomOptions } from "./room.js";
 import { type SessionEvent } from "./talk.js";
 import { version } from "./version.js";
+import { RelayFailure, retryAfter, retryDelay, waitForRetry } from "./retry.js";
 
 export const DEFAULT_RELAY = "https://agenthop.imatrix.tech";
 
@@ -22,6 +23,8 @@ export const RECOVER_MS = 45_000;
 export const HANDSHAKE_MS = 15_000;
 
 export type HostOptions = {
+  /** Cancels an in-flight handshake as well as a connected host. */
+  signal?: AbortSignal;
   relay?: string;
   pass?: string;
   code?: string;
@@ -106,6 +109,18 @@ export async function startHost(options: HostOptions = {}): Promise<RunningHost>
 
   let socket: WebSocket | undefined;
   let closing = false;
+  const stopped = new AbortController();
+  const connecting = new Set<WebSocket>();
+  let connectedAt = 0;
+  let reconnectAttempts = 0;
+  let closed: Promise<void> | undefined;
+  const close = () => (closed ??= shut());
+  const abort = () => { void close(); };
+  options.signal?.addEventListener("abort", abort, { once: true });
+  if (options.signal?.aborted) {
+    await close();
+    throw new Error("closed");
+  }
   const bridge = new HostBridge(localUrl.url, (frame) => {
     if (socket?.readyState === WebSocket.OPEN) socket.send(frame);
   });
@@ -114,13 +129,14 @@ export async function startHost(options: HostOptions = {}): Promise<RunningHost>
   function openRoom(): Promise<{ ws: WebSocket; url: string }> {
     // One deadline over the whole thing: a relay that takes the connection and then goes quiet,
     // at any step, must not leave the command sitting there with nothing on screen.
-    return withDeadline(connectRoom(), HANDSHAKE_MS, t(`The relay ${relay} did not open the room; gave up after ${HANDSHAKE_MS / 1000} seconds`, `中继 ${relay} 没有把房间开起来，${HANDSHAKE_MS / 1000} 秒后放弃`));
+    return connectRoom();
   }
 
   async function connectRoom(): Promise<{ ws: WebSocket; url: string }> {
     const ws = new WebSocket(hostUrl, {
       headers: options.pass ? { authorization: `Bearer ${options.pass}` } : undefined,
     });
+    connecting.add(ws);
     // An error on a socket with nobody listening ends the process. The relay going away
     // abruptly — killed, restarted, a network blip — raises one, sometimes more than one, and the
     // compiled binary died of it mid-conversation. The close that follows is what reopens the room.
@@ -134,20 +150,29 @@ export async function startHost(options: HostOptions = {}): Promise<RunningHost>
           reject(new Error("expected ready"));
           return;
         }
-        const controlMessage = decodeControl(data.toString());
-        if (controlMessage.type === "error") reject(new Error(openError(controlMessage.code)));
-        else if (controlMessage.type === "ready") resolve(controlMessage.publicBase);
-        else reject(new Error("bad_control"));
+        try {
+          const controlMessage = decodeControl(data.toString());
+          if (controlMessage.type === "error") reject(new RelayFailure(controlMessage.code, openError(controlMessage.code)));
+          else if (controlMessage.type === "ready") resolve(controlMessage.publicBase);
+          else reject(new Error("bad_control"));
+        } catch (error) {
+          reject(error);
+        }
       });
+      ws.once("error", (error) => reject(relayError(error, relay)));
+      ws.once("close", () => reject(new Error(t("The relay closed before opening the room", "中继在房间打开之前断开了连接"))));
+      ws.once("unexpected-response", (_request, response) => {
+        response.resume();
+        const code = response.statusCode === 429 ? "rate_limited" : response.statusCode === 401 ? "unauthorized"
+          : response.statusCode === 503 ? "relay_quota" : "relay_unavailable";
+        reject(new RelayFailure(code, openError(code), retryAfter(response.headers["retry-after"])));
+      });
+      ws.once("open", () => ws.send(JSON.stringify({ v: 1, type: "open", code, token })));
     });
     ready.catch(() => undefined);
     try {
-      await new Promise<void>((resolve, reject) => {
-        ws.once("open", () => resolve());
-        ws.once("error", (error) => reject(relayError(error, relay)));
-      });
-      ws.send(JSON.stringify({ v: 1, type: "open", code, token }));
-      const opened = await ready;
+      const opened = await withDeadline(ready, HANDSHAKE_MS, t(`The relay ${relay} did not open the room; gave up after ${HANDSHAKE_MS / 1000} seconds`, `中继 ${relay} 没有把房间开起来，${HANDSHAKE_MS / 1000} 秒后放弃`));
+      if (closing) throw new Error("closed");
       ws.on("message", (data, isBinary) => {
         if (!isBinary) return;
         bridge.onFrame(new Uint8Array(data as Buffer));
@@ -159,34 +184,53 @@ export async function startHost(options: HostOptions = {}): Promise<RunningHost>
     } catch (error) {
       ws.terminate();
       throw error;
+    } finally {
+      connecting.delete(ws);
     }
   }
 
   /** Keep trying to put the room back, so a blip is not the end of the conversation. */
   async function recover(reason: string): Promise<void> {
+    if (Date.now() - connectedAt >= 60_000) reconnectAttempts = 0;
     socket = undefined;
     options.onReconnecting?.(reason);
     const deadline = Date.now() + (options.recoverMs ?? RECOVER_MS);
-    let wait = 500;
+    let failure: unknown;
     while (!closing && Date.now() < deadline) {
-      await delay(wait);
+      const wait = retryDelay(reconnectAttempts++, failure, options.recoverMs === Infinity);
+      if (wait >= deadline - Date.now()) {
+        if (failure instanceof RelayFailure) {
+          options.onGone?.(failure.message);
+          return;
+        }
+        break;
+      }
+      await waitForRetry(wait, stopped.signal);
       if (closing) return;
       try {
         const next = await openRoom();
         socket = next.ws;
+        connectedAt = Date.now();
         options.onReconnected?.();
         return;
-      } catch {
-        wait = Math.min(wait * 2, 5000);
+      } catch (error) {
+        failure = error;
       }
     }
     const seconds = Math.round((options.recoverMs ?? RECOVER_MS) / 1000);
     if (!closing) options.onGone?.(t(`${reason}; could not bring the room back within ${seconds} seconds`, `${reason}，${seconds} 秒内没能把房间接回来`));
   }
 
-  const first = await openRoom();
+  let first: Awaited<ReturnType<typeof openRoom>>;
+  try {
+    first = await openRoom();
+  } catch (error) {
+    // Inbox retries must not leak two local HTTP servers on every failed handshake.
+    await close();
+    throw error;
+  }
   socket = first.ws;
-  let closed: Promise<void> | undefined;
+  connectedAt = Date.now();
 
   return {
     code,
@@ -194,11 +238,14 @@ export async function startHost(options: HostOptions = {}): Promise<RunningHost>
     controlUrl: control.url,
     handedOver: () => served >= room.latest(),
     // Closing twice — the server shutting down while an inbox is already on its way out — is one close.
-    close: () => (closed ??= shut()),
+    close,
   };
 
   async function shut(): Promise<void> {
     closing = true;
+    options.signal?.removeEventListener("abort", abort);
+    stopped.abort();
+    for (const pending of connecting) pending.terminate();
     const open = socket;
     if (open && (open.readyState === WebSocket.OPEN || open.readyState === WebSocket.CONNECTING)) {
       await new Promise<void>((resolve) => {
@@ -232,10 +279,6 @@ function withDeadline<T>(work: Promise<T>, ms: number, message: string): Promise
   ]).finally(() => clearTimeout(timer)) as Promise<T>;
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function relayError(error: unknown, relay: string): Error {
   const detail = error instanceof Error ? error.message : String(error);
   return new Error(t(`Cannot reach the relay ${relay}: ${detail}`, `连不上中继 ${relay}：${detail}`));
@@ -247,6 +290,8 @@ function openError(code: string): string {
   }
   if (code === "unauthorized") return t("The relay needs a password; add --pass on both sides", "中继需要密码，两边都要加 --pass");
   if (code === "rate_limited") return t("Opening rooms too often; wait a minute and try again", "开房太频繁，等一分钟再试");
+  if (code === "relay_quota") return t("The relay is temporarily unavailable; retry after its cooldown", "中继暂时不可用，请按冷却时间稍后重试");
+  if (code === "relay_unavailable") return t("The relay could not open the room", "中继暂时无法打开房间");
   return code;
 }
 

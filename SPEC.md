@@ -6,6 +6,9 @@ A Durable Object has to be chosen before a WebSocket can speak, so the host conn
 `/host/<address>`. The first text frame still repeats the address. If the two disagree, the relay
 closes the socket with `invalid_code`.
 
+The host endpoint requires GET with `Upgrade: websocket`. The Workers relay closes a socket
+that does not send its opening frame within 20 seconds.
+
 A pairing code is an address and a secret: `4821-amber-river-maple-k7f3q2mbxz4a6tu5wnhjy2pc3d`.
 Only the address — the first four segments — appears anywhere in this document. The secret never
 reaches the relay, which is why the relay can route a conversation it cannot read.
@@ -95,7 +98,23 @@ operator's bandwidth without limit.
 
 Each IP may open 10 host sockets per minute and may receive 60 responses for a missing code per minute. Further attempts are `429`. A self-hosted relay with `--pass` requires `Authorization: Bearer <secret>` and answers `401` without it.
 
-The relay log records the time and an event name. It does not record the code, the card, or
-message bodies. Rate counting keys on a salted digest of the address rather than the address,
-the salt turns over daily, and counters older than the current minute are dropped, so a relay
-holds one minute of counts and no addresses.
+The Workers relay uses native rate limiting before dispatching to Durable Objects. It additionally
+allows 20 host connection attempts per room per minute across IPs, and 300 room HTTP requests per
+IP per minute. These limits are approximate and local to each Cloudflare location. Ordinary
+one-second polling fits within the HTTP allowance. Rejected requests return `429 rate_limited`
+with `Retry-After: 60`. When Durable Object storage quota is exhausted, the Worker returns
+`503 relay_quota` with `Retry-After: 300`. Clients respect these cooldowns; an inbox retries in the
+background with exponential backoff and jitter, while conversations stop when their recovery
+budget cannot accommodate the cooldown. Briefly opening a socket does not reset retry backoff;
+a connection must stay open for a minute first.
+
+Rate limiting issues no SQLite writes. The old RateLimit Durable Object namespace is retained
+for rollback and has no ingress binding. Room activity lives in WebSocket attachments across
+hibernation. An alarm checks the latest activity deadline before closing the room, rescheduling
+itself if activity continued. A disconnected host's ownership deadline is persisted once so
+an incomplete handshake cannot clear its claim early.
+
+The application's relay log records the time and an event name. It does not record the code,
+the card, or message bodies. Native IP rate-limit keys are digests that rotate daily; the
+application does not persist IP counters in SQL. Cloudflare request observability is separate
+from these application log messages.

@@ -5,6 +5,7 @@ import { filesFromPaths, messageFromParts, partsFromMessage, type HopFile } from
 import { normalizeCode, relayEndpoints } from "@agenthop/tunnel";
 import { DEFAULT_RELAY } from "./host.js";
 import { type SessionEvent } from "./talk.js";
+import { RelayFailure, retryAfter } from "./retry.js";
 
 export type SendOptions = {
   code: string;
@@ -104,7 +105,13 @@ export async function readQueue(publicBase: string, after = 0, pass?: string): P
   const response = await fetch(`${publicBase}agenthop/queue?after=${after}`, {
     headers: pass ? { authorization: `Bearer ${pass}` } : {},
   });
-  if (!response.ok) throw new Error(await response.text());
+  if (!response.ok) {
+    const detail = await response.text();
+    if (response.status === 429 || response.status === 503 || response.status === 401) {
+      throw new RelayFailure(response.status === 429 ? "rate_limited" : response.status === 401 ? "unauthorized" : "relay_quota", detail, retryAfter(response.headers.get("retry-after")));
+    }
+    throw new Error(detail);
+  }
   return (await response.json()) as { events: SessionEvent[] };
 }
 

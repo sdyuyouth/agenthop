@@ -2,6 +2,13 @@
 
 每个版本的完整说明在 [Releases](https://github.com/sdyuyouth/agenthop/releases)。这里只留下变了什么。
 
+## v0.6.2
+
+- Cloudflare 中继改用原生限流，不再为每次连接尝试写 SQLite；增加同房间跨 IP 建连限制及进入房间前的 HTTP 请求限制。
+- 房间活动时间通过 WebSocket attachment 跨休眠保存，alarm 到期再检查空闲时间，避免每个轮询和数据帧都写 alarm；未完成握手的连接在 20 秒后关闭。
+- 修复拒绝第二个 host 时误关已有转发会话的问题，保留断线 host 的房间所有权到空闲到期。
+- 客户端识别限流和服务额度错误，遵守 Retry-After，增加带随机抖动的退避；短暂连上后立即断开不再重置退避。修复失败握手遗留本地 HTTP 服务及超时 WebSocket 的问题。
+
 ## v0.6.0
 
 - **默认说英文，可选中文**。帮助、提示、错误、MCP 的工具说明和返回的话、装进 agent 的技能，现在默认都是英文。`agenthop install --lang zh` 换成中文并记在 `~/.agenthop/install.json` 里（`--lang en` 换回来），之后 `agenthop update` 写回的技能也是中文；只想这一次用中文，设 `AGENTHOP_LANG=zh`。状态词和日志格式不变，对话两边不必用同一种语言。**从旧版本升级上来、想继续用中文的，跑一次 `agenthop install --lang zh`**；还没选过语言时，`install` 和 `update` 的输出里会有一行中英双语的提示。
