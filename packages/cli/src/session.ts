@@ -10,6 +10,7 @@ import { channel, SEALED_TYPE, type Channel } from "./seal.js";
 import { contactByKey, fingerprint, isPublicKey, loadIdentity, type Identity } from "./identity.js";
 import { both, ours, t } from "./lang.js";
 import { type SessionEvent } from "./talk.js";
+import { RelayFailure, retryDelay, waitForRetry } from "./retry.js";
 
 /** Written on stdin to end the conversation on purpose. */
 export const BYE = "/bye";
@@ -300,6 +301,7 @@ async function joinConversation(options: SessionOptions, home: string, code: str
   const base = roomBase(options.relay, address);
   let after = 0;
   let failingSince = 0;
+  let failedPolls = 0;
   let saidBye = 0;
   let phase: "wait-hello" | "wait-confirm" | "ready" = "wait-hello";
   const early: string[] = [];
@@ -320,7 +322,8 @@ async function joinConversation(options: SessionOptions, home: string, code: str
       events = (await readQueue(base, after, options.pass)).events;
       if (failingSince) write(log, "local", "reconnected", t("The room can be read again; the conversation can go on", "又能读到房间了，对话可以继续"));
       failingSince = 0;
-    } catch {
+      failedPolls = 0;
+    } catch (error) {
       if (!failingSince) {
         failingSince = Date.now();
         write(log, "local", "reconnecting", t("Cannot read the room; trying again", "读不到房间了，正在重试"));
@@ -330,7 +333,14 @@ async function joinConversation(options: SessionOptions, home: string, code: str
         write(log, "peer", "gone", t("The room is gone: the other side may have left, or it sat idle for over ten minutes", "房间已经不在了，对方可能已经退出，或者房间空闲超过十分钟"));
         return;
       }
-      await delay(RELAY_POLL_MS);
+      const remaining = (options.recoverMs ?? RECOVER_MS) - (Date.now() - failingSince);
+      const wait = error instanceof RelayFailure ? retryDelay(failedPolls++, error) : RELAY_POLL_MS;
+      if (error instanceof RelayFailure && wait >= remaining) {
+        reportUnsent();
+        write(log, "peer", "gone", t(`The relay cannot recover within this conversation's retry window: ${error.message}`, `中继无法在这场对话的重试时间内恢复：${error.message}`));
+        return;
+      }
+      await waitForRetry(Math.min(wait, remaining + 1), options.signal);
       continue;
     }
     for (const event of events) {

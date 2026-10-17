@@ -52,6 +52,13 @@ describe.skipIf(!live)("wrangler dev", () => {
     expect(streamed.headers.get("content-type")).toContain("text/event-stream");
     expect(await streamed.text()).toBe("onetwo");
 
+    const heldStream = await fetch(`${base}/r/${code}/`, { method: "POST", body: "hold-open" });
+    const reader = heldStream.body!.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe("one");
+    expect(await openAs(code, "another-host")).toEqual({ v: 1, type: "error", code: "room_taken" });
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe("two");
+    expect((await reader.read()).done).toBe(true);
+
     const big = await fetch(`${base}/r/${code}/`, { method: "POST", body: "x".repeat(1024 * 1024 + 1) });
     expect(big.status).toBe(413);
 
@@ -143,9 +150,10 @@ async function onMessage(
       supportedInterfaces: [{ url: "http://127.0.0.1:9/", protocolBinding: "JSONRPC", protocolVersion: "1.0" }],
     });
     reply(ws, frame.requestId, "application/json", card);
-  } else if (payload === "stream-please") {
+  } else if (payload === "stream-please" || payload === "hold-open") {
     send(ws, encodeFrame({ type: "response-start", requestId: frame.requestId, status: 200, headers: [["content-type", "text/event-stream"]] }));
     send(ws, encodeFrame({ type: "response-body", requestId: frame.requestId, body: new TextEncoder().encode("one") }));
+    if (payload === "hold-open") await new Promise((resolve) => setTimeout(resolve, 150));
     send(ws, encodeFrame({ type: "response-body", requestId: frame.requestId, body: new TextEncoder().encode("two") }));
     send(ws, encodeFrame({ type: "response-end", requestId: frame.requestId }));
   } else {

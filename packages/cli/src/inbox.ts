@@ -7,6 +7,7 @@ import { both, ours, t } from "./lang.js";
 import { startHost, type RunningHost } from "./host.js";
 import { sendMessage } from "./send.js";
 import { oneLine, stamp } from "./session.js";
+import { retryDelay, waitForRetry } from "./retry.js";
 
 /**
  * The room invitations are delivered to. It is held open for as long as the MCP server runs, at
@@ -22,8 +23,6 @@ export const INVITE_TTL_MS = 10 * 60_000;
  * than that without an invitation. A read of its own Agent Card through the relay counts.
  */
 const KEEPALIVE_MS = 4 * 60_000;
-const FIRST_RETRY_MS = 5_000;
-const MAX_RETRY_MS = 120_000;
 
 export type Received = OpenedInvitation & { name: string };
 
@@ -50,6 +49,7 @@ export function startInbox(options: InboxOptions): Inbox {
   let host: RunningHost | undefined;
   let keepalive: NodeJS.Timeout | undefined;
   let closed = false;
+  const stopped = new AbortController();
   let state = t("connecting", "正在挂上");
 
   const note = (side: "local" | "peer", word: string, text = "") => {
@@ -80,10 +80,11 @@ export function startInbox(options: InboxOptions): Inbox {
   };
 
   async function open(): Promise<void> {
-    let wait = FIRST_RETRY_MS;
+    let attempts = 0;
     while (!closed) {
       try {
         const opened = await startHost({
+          signal: stopped.signal,
           code: address,
           token: inboxToken(identity),
           serveQueue: false,
@@ -126,10 +127,10 @@ export function startInbox(options: InboxOptions): Inbox {
         keepalive.unref();
         return;
       } catch (error) {
+        const wait = retryDelay(attempts++, error, true);
         const why = error instanceof Error ? error.message : String(error);
         state = t(`not connected (${why}); trying again in ${Math.round(wait / 1000)} seconds`, `没挂上（${why}），${Math.round(wait / 1000)} 秒后再试`);
-        await delay(wait);
-        wait = Math.min(wait * 2, MAX_RETRY_MS);
+        await waitForRetry(wait, stopped.signal);
       }
     }
   }
@@ -150,6 +151,7 @@ export function startInbox(options: InboxOptions): Inbox {
     async close() {
       if (closed) return;
       closed = true;
+      stopped.abort();
       if (keepalive) clearInterval(keepalive);
       await host?.close();
       host = undefined;
@@ -172,8 +174,4 @@ export async function deliverInvitation(options: { sender: Identity; to: Contact
     }
     throw new Error(t(`The invitation did not reach ${options.to.name}: ${ours(detail)}`, `邀请没有送到 ${options.to.name}：${ours(detail)}`));
   }
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
